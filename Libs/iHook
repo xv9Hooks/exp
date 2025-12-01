@@ -1,0 +1,1784 @@
+--[[
+    iHook UI Library v1.0
+    Modern, Mobil Uyumlu, Executor-Friendly UI Kütüphanesi
+    
+    KULLANIM:
+    local iHook = loadstring(game:HttpGet("YOUR_URL_HERE"))()
+]]
+
+local iHook = {}
+iHook.Version = "1.0.0"
+iHook.Options = {}
+
+-- Services
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+
+-- Variables
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local ViewportSize = workspace.CurrentCamera.ViewportSize
+local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+-- Utility Functions
+local Utilities = {}
+
+function Utilities:Create(class, properties)
+    local object = Instance.new(class)
+    for i, v in pairs(properties) do
+        if i ~= "Parent" then
+            object[i] = v
+        end
+    end
+    object.Parent = properties.Parent
+    return object
+end
+
+function Utilities:Tween(object, properties, duration, style, direction)
+    local tweenInfo = TweenInfo.new(
+        duration or 0.3,
+        style or Enum.EasingStyle.Quad,
+        direction or Enum.EasingDirection.Out
+    )
+    local tween = TweenService:Create(object, tweenInfo, properties)
+    tween:Play()
+    return tween
+end
+
+function Utilities:MakeDraggable(frame, dragArea)
+    local dragging = false
+    local dragInput, mousePos, framePos
+
+    dragArea = dragArea or frame
+
+    dragArea.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            mousePos = input.Position
+            framePos = frame.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    dragArea.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - mousePos
+            Utilities:Tween(frame, {
+                Position = UDim2.new(
+                    framePos.X.Scale,
+                    framePos.X.Offset + delta.X,
+                    framePos.Y.Scale,
+                    framePos.Y.Offset + delta.Y
+                )
+            }, 0.1)
+        end
+    end)
+end
+
+function Utilities:GetTextBounds(text, font, size)
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Text = text
+    textLabel.Font = font
+    textLabel.TextSize = size
+    textLabel.Parent = game:GetService("CoreGui")
+    local bounds = textLabel.TextBounds
+    textLabel:Destroy()
+    return bounds
+end
+
+-- Theme System
+local Themes = {
+    Dark = {
+        Background = Color3.fromRGB(20, 20, 25),
+        Secondary = Color3.fromRGB(30, 30, 35),
+        Tertiary = Color3.fromRGB(40, 40, 45),
+        Accent = Color3.fromRGB(100, 150, 255),
+        AccentHover = Color3.fromRGB(120, 170, 255),
+        Text = Color3.fromRGB(240, 240, 245),
+        TextDark = Color3.fromRGB(180, 180, 190),
+        Border = Color3.fromRGB(50, 50, 55),
+        Success = Color3.fromRGB(80, 200, 120),
+        Warning = Color3.fromRGB(255, 180, 80),
+        Error = Color3.fromRGB(255, 100, 100),
+    },
+    Light = {
+        Background = Color3.fromRGB(245, 245, 250),
+        Secondary = Color3.fromRGB(235, 235, 240),
+        Tertiary = Color3.fromRGB(225, 225, 230),
+        Accent = Color3.fromRGB(80, 130, 235),
+        AccentHover = Color3.fromRGB(100, 150, 255),
+        Text = Color3.fromRGB(20, 20, 25),
+        TextDark = Color3.fromRGB(100, 100, 110),
+        Border = Color3.fromRGB(200, 200, 210),
+        Success = Color3.fromRGB(60, 180, 100),
+        Warning = Color3.fromRGB(235, 160, 60),
+        Error = Color3.fromRGB(235, 80, 80),
+    }
+}
+
+iHook.CurrentTheme = Themes.Dark
+
+-- Screen Setup
+local function SetupScreenGui()
+    local existingGui = CoreGui:FindFirstChild("iHookUI")
+    if existingGui then
+        existingGui:Destroy()
+    end
+
+    local screenGui = Utilities:Create("ScreenGui", {
+        Name = "iHookUI",
+        Parent = CoreGui,
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 999999999
+    })
+
+    return screenGui
+end
+
+iHook.ScreenGui = SetupScreenGui()
+
+-- Window Constructor
+function iHook:CreateWindow(config)
+    config = config or {}
+    local Window = {
+        Title = config.Title or "iHook",
+        SubTitle = config.SubTitle or "",
+        Size = config.Size or UDim2.fromOffset(580, 460),
+        Acrylic = config.Acrylic ~= false,
+        Theme = config.Theme or "Dark",
+        MinimizeKey = config.MinimizeKey or Enum.KeyCode.LeftControl,
+        Tabs = {},
+        CurrentTab = nil,
+        Minimized = false
+    }
+
+    -- Responsive sizing for mobile
+    if IsMobile then
+        Window.Size = UDim2.fromScale(0.95, 0.85)
+    end
+
+    -- Set theme
+    iHook.CurrentTheme = Themes[Window.Theme] or Themes.Dark
+
+    -- Main Container
+    local MainFrame = Utilities:Create("Frame", {
+        Name = "MainWindow",
+        Parent = iHook.ScreenGui,
+        BackgroundColor3 = iHook.CurrentTheme.Background,
+        BackgroundTransparency = Window.Acrylic and 0.1 or 0,
+        BorderSizePixel = 0,
+        Position = UDim2.fromScale(0.5, 0.5),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = Window.Size,
+        ClipsDescendants = true
+    })
+
+    -- UI Corner
+    Utilities:Create("UICorner", {
+        CornerRadius = UDim.new(0, 12),
+        Parent = MainFrame
+    })
+
+    -- Acrylic Blur Effect
+    if Window.Acrylic then
+        local BlurEffect = Utilities:Create("ImageLabel", {
+            Name = "Blur",
+            Parent = MainFrame,
+            BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1),
+            Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+            ImageColor3 = iHook.CurrentTheme.Background,
+            ImageTransparency = 0.5,
+            ScaleType = Enum.ScaleType.Tile,
+            TileSize = UDim2.fromOffset(128, 128),
+            ZIndex = 0
+        })
+    end
+
+    -- Border Accent
+    local BorderAccent = Utilities:Create("Frame", {
+        Name = "BorderAccent",
+        Parent = MainFrame,
+        BackgroundColor3 = iHook.CurrentTheme.Accent,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 2),
+        Position = UDim2.fromOffset(0, 0)
+    })
+
+    Utilities:Create("UICorner", {
+        CornerRadius = UDim.new(0, 12),
+        Parent = BorderAccent
+    })
+    
+    -- Title Bar
+    local TitleBar = Utilities:Create("Frame", {
+        Name = "TitleBar",
+        Parent = MainFrame,
+        BackgroundColor3 = iHook.CurrentTheme.Secondary,
+        BackgroundTransparency = 0.3,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 50),
+        Position = UDim2.fromOffset(0, 2)
+    })
+
+    Utilities:Create("UICorner", {
+        CornerRadius = UDim.new(0, 12),
+        Parent = TitleBar
+    })
+
+    -- Title Text
+    local TitleLabel = Utilities:Create("TextLabel", {
+        Name = "Title",
+        Parent = TitleBar,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(20, 10),
+        Size = UDim2.new(0.5, -30, 0, 20),
+        Font = Enum.Font.GothamBold,
+        Text = Window.Title,
+        TextColor3 = iHook.CurrentTheme.Text,
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left
+    })
+
+    -- Subtitle
+    local SubTitleLabel = Utilities:Create("TextLabel", {
+        Name = "SubTitle",
+        Parent = TitleBar,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(20, 28),
+        Size = UDim2.new(0.5, -30, 0, 14),
+        Font = Enum.Font.Gotham,
+        Text = Window.SubTitle,
+        TextColor3 = iHook.CurrentTheme.TextDark,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left
+    })
+
+    -- Minimize Button
+    local MinimizeBtn = Utilities:Create("TextButton", {
+        Name = "MinimizeBtn",
+        Parent = TitleBar,
+        BackgroundColor3 = iHook.CurrentTheme.Tertiary,
+        BorderSizePixel = 0,
+        Position = UDim2.new(1, -80, 0.5, -12),
+        Size = UDim2.fromOffset(24, 24),
+        AutoButtonColor = false,
+        Font = Enum.Font.GothamBold,
+        Text = "-",
+        TextColor3 = iHook.CurrentTheme.Text,
+        TextSize = 18
+    })
+
+    Utilities:Create("UICorner", {
+        CornerRadius = UDim.new(0, 6),
+        Parent = MinimizeBtn
+    })
+
+    -- Close Button
+    local CloseBtn = Utilities:Create("TextButton", {
+        Name = "CloseBtn",
+        Parent = TitleBar,
+        BackgroundColor3 = iHook.CurrentTheme.Error,
+        BorderSizePixel = 0,
+        Position = UDim2.new(1, -45, 0.5, -12),
+        Size = UDim2.fromOffset(24, 24),
+        AutoButtonColor = false,
+        Font = Enum.Font.GothamBold,
+        Text = "×",
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        TextSize = 18
+    })
+
+    Utilities:Create("UICorner", {
+        CornerRadius = UDim.new(0, 6),
+        Parent = CloseBtn
+    })
+
+    -- Button Hover Effects
+    MinimizeBtn.MouseEnter:Connect(function()
+        Utilities:Tween(MinimizeBtn, {BackgroundColor3 = iHook.CurrentTheme.Accent}, 0.2)
+    end)
+    MinimizeBtn.MouseLeave:Connect(function()
+        Utilities:Tween(MinimizeBtn, {BackgroundColor3 = iHook.CurrentTheme.Tertiary}, 0.2)
+    end)
+
+    CloseBtn.MouseEnter:Connect(function()
+        Utilities:Tween(CloseBtn, {BackgroundColor3 = Color3.fromRGB(255, 60, 60)}, 0.2)
+    end)
+    CloseBtn.MouseLeave:Connect(function()
+        Utilities:Tween(CloseBtn, {BackgroundColor3 = iHook.CurrentTheme.Error}, 0.2)
+    end)
+
+    -- Tab Container
+    local TabContainer = Utilities:Create("Frame", {
+        Name = "TabContainer",
+        Parent = MainFrame,
+        BackgroundColor3 = iHook.CurrentTheme.Secondary,
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 52),
+        Size = UDim2.new(0, config.TabWidth or 160, 1, -52)
+    })
+
+    local TabList = Utilities:Create("ScrollingFrame", {
+        Name = "TabList",
+        Parent = TabContainer,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1),
+        CanvasSize = UDim2.fromScale(1, 0),
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = iHook.CurrentTheme.Accent
+    })
+
+    Utilities:Create("UIListLayout", {
+        Parent = TabList,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 4)
+    })
+
+    Utilities:Create("UIPadding", {
+        Parent = TabList,
+        PaddingTop = UDim.new(0, 8),
+        PaddingBottom = UDim.new(0, 8),
+        PaddingLeft = UDim.new(0, 8),
+        PaddingRight = UDim.new(0, 8)
+    })
+
+    -- Content Container
+    local ContentContainer = Utilities:Create("Frame", {
+        Name = "ContentContainer",
+        Parent = MainFrame,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, (config.TabWidth or 160) + 10, 0, 62),
+        Size = UDim2.new(1, -(config.TabWidth or 160) - 20, 1, -72)
+    })
+
+    -- Make draggable
+    Utilities:MakeDraggable(MainFrame, TitleBar)
+
+    -- Close functionality
+    CloseBtn.MouseButton1Click:Connect(function()
+        Utilities:Tween(MainFrame, {Size = UDim2.fromOffset(0, 0)}, 0.3, Enum.EasingStyle.Back)
+        task.wait(0.3)
+        iHook.ScreenGui:Destroy()
+        iHook.Unloaded = true
+    end)
+
+    -- Minimize functionality
+    local OriginalSize = MainFrame.Size
+    MinimizeBtn.MouseButton1Click:Connect(function()
+        Window.Minimized = not Window.Minimized
+        if Window.Minimized then
+            Utilities:Tween(MainFrame, {Size = UDim2.new(OriginalSize.X.Scale, OriginalSize.X.Offset, 0, 50)}, 0.3)
+            MinimizeBtn.Text = "+"
+        else
+            Utilities:Tween(MainFrame, {Size = OriginalSize}, 0.3)
+            MinimizeBtn.Text = "-"
+        end
+    end)
+
+    -- Minimize key
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not gameProcessed and input.KeyCode == Window.MinimizeKey then
+            MinimizeBtn.MouseButton1Click:Fire()
+        end
+    end)
+
+    -- Tab Functions
+    function Window:AddTab(config)
+        config = config or {}
+        local Tab = {
+            Title = config.Title or "Tab",
+            Icon = config.Icon or "",
+            Elements = {},
+            Index = #Window.Tabs + 1
+        }
+
+        -- Tab Button
+        local TabButton = Utilities:Create("TextButton", {
+            Name = "TabButton",
+            Parent = TabList,
+            BackgroundColor3 = iHook.CurrentTheme.Tertiary,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Size = UDim2.new(1, -8, 0, 36),
+            AutoButtonColor = false,
+            Font = Enum.Font.GothamMedium,
+            Text = "",
+            TextColor3 = iHook.CurrentTheme.TextDark,
+            TextSize = 14,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ClipsDescendants = true,
+            LayoutOrder = Tab.Index
+        })
+
+        Utilities:Create("UICorner", {
+            CornerRadius = UDim.new(0, 8),
+            Parent = TabButton
+        })
+
+        Utilities:Create("UIPadding", {
+            Parent = TabButton,
+            PaddingLeft = UDim.new(0, 12)
+        })
+
+        -- Tab Icon
+        local TabIcon = Utilities:Create("ImageLabel", {
+            Name = "Icon",
+            Parent = TabButton,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(8, 8),
+            Size = UDim2.fromOffset(20, 20),
+            Image = Tab.Icon ~= "" and ("rbxassetid://" .. Tab.Icon) or "",
+            ImageColor3 = iHook.CurrentTheme.TextDark
+        })
+
+        -- Tab Text
+        local TabText = Utilities:Create("TextLabel", {
+            Name = "Text",
+            Parent = TabButton,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(Tab.Icon ~= "" and 36 or 12, 0),
+            Size = UDim2.new(1, Tab.Icon ~= "" and -40 or -12, 1, 0),
+            Font = Enum.Font.GothamMedium,
+            Text = Tab.Title,
+            TextColor3 = iHook.CurrentTheme.TextDark,
+            TextSize = 13,
+            TextXAlignment = Enum.TextXAlignment.Left
+        })
+
+        -- Tab Content Frame
+        local TabContent = Utilities:Create("ScrollingFrame", {
+            Name = "TabContent_" .. Tab.Index,
+            Parent = ContentContainer,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Size = UDim2.fromScale(1, 1),
+            CanvasSize = UDim2.fromScale(1, 0),
+            ScrollBarThickness = 6,
+            ScrollBarImageColor3 = iHook.CurrentTheme.Accent,
+            Visible = false
+        })
+
+        local ContentLayout = Utilities:Create("UIListLayout", {
+            Parent = TabContent,
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 8)
+        })
+
+        Utilities:Create("UIPadding", {
+            Parent = TabContent,
+            PaddingTop = UDim.new(0, 8),
+            PaddingBottom = UDim.new(0, 8),
+            PaddingLeft = UDim.new(0, 4),
+            PaddingRight = UDim.new(0, 4)
+        })
+
+        -- Auto resize canvas
+        ContentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            TabContent.CanvasSize = UDim2.fromOffset(0, ContentLayout.AbsoluteContentSize.Y + 16)
+        end)
+        
+        -- Tab selection
+        local function SelectTab()
+            for _, tab in pairs(Window.Tabs) do
+                local btn = TabList:FindFirstChild("TabButton")
+                if tab.Button then
+                    Utilities:Tween(tab.Button, {BackgroundTransparency = 1}, 0.2)
+                    tab.Button.Text.TextColor3 = iHook.CurrentTheme.TextDark
+                    if tab.Button:FindFirstChild("Icon") then
+                        tab.Button.Icon.ImageColor3 = iHook.CurrentTheme.TextDark
+                    end
+                end
+                if tab.Content then
+                    tab.Content.Visible = false
+                end
+            end
+
+            Utilities:Tween(TabButton, {BackgroundTransparency = 0}, 0.2)
+            TabText.TextColor3 = iHook.CurrentTheme.Text
+            if TabIcon then
+                TabIcon.ImageColor3 = iHook.CurrentTheme.Accent
+            end
+            TabContent.Visible = true
+            Window.CurrentTab = Tab
+        end
+
+        TabButton.MouseButton1Click:Connect(SelectTab)
+
+        -- Hover effect
+        TabButton.MouseEnter:Connect(function()
+            if Window.CurrentTab ~= Tab then
+                Utilities:Tween(TabButton, {BackgroundTransparency = 0.7}, 0.2)
+            end
+        end)
+
+        TabButton.MouseLeave:Connect(function()
+            if Window.CurrentTab ~= Tab then
+                Utilities:Tween(TabButton, {BackgroundTransparency = 1}, 0.2)
+            end
+        end)
+
+        Tab.Button = TabButton
+        Tab.Content = TabContent
+
+        -- Component Functions
+        function Tab:AddButton(config)
+            config = config or {}
+            local Button = {
+                Title = config.Title or "Button",
+                Description = config.Description or "",
+                Callback = config.Callback or function() end
+            }
+
+            local ButtonFrame = Utilities:Create("Frame", {
+                Name = "Button",
+                Parent = TabContent,
+                BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -8, 0, config.Description ~= "" and 60 or 40),
+                LayoutOrder = #Tab.Elements + 1
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = ButtonFrame
+            })
+
+            local ButtonClick = Utilities:Create("TextButton", {
+                Name = "Btn",
+                Parent = ButtonFrame,
+                BackgroundTransparency = 1,
+                Size = UDim2.fromScale(1, 1),
+                Font = Enum.Font.Gotham,
+                Text = "",
+                TextColor3 = iHook.CurrentTheme.Text
+            })
+
+            local ButtonTitle = Utilities:Create("TextLabel", {
+                Name = "Title",
+                Parent = ButtonFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, config.Description ~= "" and 8 or 10),
+                Size = UDim2.new(1, -24, 0, 18),
+                Font = Enum.Font.GothamMedium,
+                Text = Button.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            if config.Description ~= "" then
+                local ButtonDesc = Utilities:Create("TextLabel", {
+                    Name = "Description",
+                    Parent = ButtonFrame,
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(12, 26),
+                    Size = UDim2.new(1, -24, 0, 26),
+                    Font = Enum.Font.Gotham,
+                    Text = Button.Description,
+                    TextColor3 = iHook.CurrentTheme.TextDark,
+                    TextSize = 12,
+                    TextWrapped = true,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextYAlignment = Enum.TextYAlignment.Top
+                })
+            end
+
+            -- Click effect
+            ButtonClick.MouseButton1Click:Connect(function()
+                Utilities:Tween(ButtonFrame, {BackgroundColor3 = iHook.CurrentTheme.Accent}, 0.1)
+                task.wait(0.1)
+                Utilities:Tween(ButtonFrame, {BackgroundColor3 = iHook.CurrentTheme.Secondary}, 0.1)
+                task.spawn(Button.Callback)
+            end)
+
+            -- Hover
+            ButtonClick.MouseEnter:Connect(function()
+                Utilities:Tween(ButtonFrame, {BackgroundColor3 = iHook.CurrentTheme.Tertiary}, 0.2)
+            end)
+            ButtonClick.MouseLeave:Connect(function()
+                Utilities:Tween(ButtonFrame, {BackgroundColor3 = iHook.CurrentTheme.Secondary}, 0.2)
+            end)
+
+            table.insert(Tab.Elements, Button)
+            return Button
+        end
+
+        function Tab:AddToggle(id, config)
+            config = config or {}
+            local Toggle = {
+                Title = config.Title or "Toggle",
+                Description = config.Description or "",
+                Default = config.Default or false,
+                Value = config.Default or false,
+                Callback = config.Callback or function() end,
+                _changed = {}
+            }
+
+            iHook.Options[id] = Toggle
+
+            local ToggleFrame = Utilities:Create("Frame", {
+                Name = "Toggle",
+                Parent = TabContent,
+                BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -8, 0, config.Description ~= "" and 60 or 40),
+                LayoutOrder = #Tab.Elements + 1
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = ToggleFrame
+            })
+
+            local ToggleBtn = Utilities:Create("TextButton", {
+                Name = "ToggleBtn",
+                Parent = ToggleFrame,
+                BackgroundTransparency = 1,
+                Size = UDim2.fromScale(1, 1),
+                Text = ""
+            })
+
+            local ToggleTitle = Utilities:Create("TextLabel", {
+                Name = "Title",
+                Parent = ToggleFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, config.Description ~= "" and 8 or 10),
+                Size = UDim2.new(1, -70, 0, 18),
+                Font = Enum.Font.GothamMedium,
+                Text = Toggle.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            if config.Description ~= "" then
+                Utilities:Create("TextLabel", {
+                    Name = "Description",
+                    Parent = ToggleFrame,
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(12, 26),
+                    Size = UDim2.new(1, -70, 0, 26),
+                    Font = Enum.Font.Gotham,
+                    Text = Toggle.Description,
+                    TextColor3 = iHook.CurrentTheme.TextDark,
+                    TextSize = 12,
+                    TextWrapped = true,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextYAlignment = Enum.TextYAlignment.Top
+                })
+            end
+
+            -- Switch
+            local Switch = Utilities:Create("Frame", {
+                Name = "Switch",
+                Parent = ToggleFrame,
+                BackgroundColor3 = iHook.CurrentTheme.Tertiary,
+                BorderSizePixel = 0,
+                Position = UDim2.new(1, -52, 0.5, -10),
+                Size = UDim2.fromOffset(44, 20)
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(1, 0),
+                Parent = Switch
+            })
+
+            local Knob = Utilities:Create("Frame", {
+                Name = "Knob",
+                Parent = Switch,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderSizePixel = 0,
+                Position = UDim2.fromOffset(2, 2),
+                Size = UDim2.fromOffset(16, 16)
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(1, 0),
+                Parent = Knob
+            })
+
+            function Toggle:SetValue(value)
+                Toggle.Value = value
+                if value then
+                    Utilities:Tween(Switch, {BackgroundColor3 = iHook.CurrentTheme.Accent}, 0.2)
+                    Utilities:Tween(Knob, {Position = UDim2.fromOffset(26, 2)}, 0.2)
+                else
+                    Utilities:Tween(Switch, {BackgroundColor3 = iHook.CurrentTheme.Tertiary}, 0.2)
+                    Utilities:Tween(Knob, {Position = UDim2.fromOffset(2, 2)}, 0.2)
+                end
+                for _, func in pairs(Toggle._changed) do
+                    task.spawn(func, value)
+                end
+            end
+
+            function Toggle:OnChanged(func)
+                table.insert(Toggle._changed, func)
+                return func
+            end
+
+            ToggleBtn.MouseButton1Click:Connect(function()
+                Toggle:SetValue(not Toggle.Value)
+                task.spawn(Toggle.Callback, Toggle.Value)
+            end)
+
+            Toggle:SetValue(Toggle.Default)
+
+            table.insert(Tab.Elements, Toggle)
+            return Toggle
+        end
+
+        function Tab:AddSlider(id, config)
+            config = config or {}
+            local Slider = {
+                Title = config.Title or "Slider",
+                Description = config.Description or "",
+                Min = config.Min or 0,
+                Max = config.Max or 100,
+                Default = config.Default or 50,
+                Rounding = config.Rounding or 1,
+                Value = config.Default or 50,
+                Callback = config.Callback or function() end,
+                _changed = {}
+            }
+
+            iHook.Options[id] = Slider
+
+            local SliderFrame = Utilities:Create("Frame", {
+                Name = "Slider",
+                Parent = TabContent,
+                BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -8, 0, config.Description ~= "" and 75 or 55),
+                LayoutOrder = #Tab.Elements + 1
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = SliderFrame
+            })
+
+            local SliderTitle = Utilities:Create("TextLabel", {
+                Name = "Title",
+                Parent = SliderFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, 8),
+                Size = UDim2.new(0.6, -12, 0, 18),
+                Font = Enum.Font.GothamMedium,
+                Text = Slider.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            local SliderValue = Utilities:Create("TextLabel", {
+                Name = "Value",
+                Parent = SliderFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.new(1, -60, 0, 8),
+                Size = UDim2.fromOffset(48, 18),
+                Font = Enum.Font.GothamBold,
+                Text = tostring(Slider.Default),
+                TextColor3 = iHook.CurrentTheme.Accent,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Right
+            })
+
+            if config.Description ~= "" then
+                Utilities:Create("TextLabel", {
+                    Name = "Description",
+                    Parent = SliderFrame,
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(12, 26),
+                    Size = UDim2.new(1, -24, 0, 14),
+                    Font = Enum.Font.Gotham,
+                    Text = Slider.Description,
+                    TextColor3 = iHook.CurrentTheme.TextDark,
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Left
+                })
+            end
+            
+            -- Slider Track
+            local SliderTrack = Utilities:Create("Frame", {
+                Name = "Track",
+                Parent = SliderFrame,
+                BackgroundColor3 = iHook.CurrentTheme.Tertiary,
+                BorderSizePixel = 0,
+                Position = UDim2.new(0, 12, 1, config.Description ~= "" and -18 or -14),
+                Size = UDim2.new(1, -24, 0, 4)
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(1, 0),
+                Parent = SliderTrack
+            })
+
+            local SliderFill = Utilities:Create("Frame", {
+                Name = "Fill",
+                Parent = SliderTrack,
+                BackgroundColor3 = iHook.CurrentTheme.Accent,
+                BorderSizePixel = 0,
+                Size = UDim2.fromScale(0.5, 1)
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(1, 0),
+                Parent = SliderFill
+            })
+
+            local SliderKnob = Utilities:Create("Frame", {
+                Name = "Knob",
+                Parent = SliderTrack,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderSizePixel = 0,
+                Position = UDim2.fromScale(0.5, 0.5),
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.fromOffset(12, 12)
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(1, 0),
+                Parent = SliderKnob
+            })
+
+            local dragging = false
+
+            function Slider:SetValue(value)
+                value = math.clamp(value, Slider.Min, Slider.Max)
+                value = math.floor(value / Slider.Rounding + 0.5) * Slider.Rounding
+                Slider.Value = value
+
+                local percent = (value - Slider.Min) / (Slider.Max - Slider.Min)
+                SliderFill.Size = UDim2.fromScale(percent, 1)
+                SliderKnob.Position = UDim2.fromScale(percent, 0.5)
+                SliderValue.Text = tostring(value)
+
+                for _, func in pairs(Slider._changed) do
+                    task.spawn(func, value)
+                end
+            end
+
+            function Slider:OnChanged(func)
+                table.insert(Slider._changed, func)
+                return func
+            end
+
+            local function UpdateSlider(input)
+                local pos = (input.Position.X - SliderTrack.AbsolutePosition.X) / SliderTrack.AbsoluteSize.X
+                pos = math.clamp(pos, 0, 1)
+                local value = Slider.Min + (Slider.Max - Slider.Min) * pos
+                Slider:SetValue(value)
+                task.spawn(Slider.Callback, Slider.Value)
+            end
+
+            SliderTrack.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    dragging = true
+                    UpdateSlider(input)
+                end
+            end)
+
+            SliderTrack.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    dragging = false
+                end
+            end)
+
+            UserInputService.InputChanged:Connect(function(input)
+                if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                    UpdateSlider(input)
+                end
+            end)
+
+            Slider:SetValue(Slider.Default)
+            table.insert(Tab.Elements, Slider)
+            return Slider
+        end
+
+        function Tab:AddDropdown(id, config)
+            config = config or {}
+            local Dropdown = {
+                Title = config.Title or "Dropdown",
+                Description = config.Description or "",
+                Values = config.Values or {},
+                Multi = config.Multi or false,
+                Default = config.Default or (config.Multi and {} or 1),
+                Value = config.Multi and {} or "",
+                Open = false,
+                _changed = {}
+            }
+
+            iHook.Options[id] = Dropdown
+
+            local DropdownFrame = Utilities:Create("Frame", {
+                Name = "Dropdown",
+                Parent = TabContent,
+                BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -8, 0, config.Description ~= "" and 70 : 50),
+                ClipsDescendants = true,
+                LayoutOrder = #Tab.Elements + 1
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = DropdownFrame
+            })
+
+            local DropdownTitle = Utilities:Create("TextLabel", {
+                Name = "Title",
+                Parent = DropdownFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, 8),
+                Size = UDim2.new(1, -50, 0, 18),
+                Font = Enum.Font.GothamMedium,
+                Text = Dropdown.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            if config.Description ~= "" then
+                Utilities:Create("TextLabel", {
+                    Name = "Description",
+                    Parent = DropdownFrame,
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(12, 26),
+                    Size = UDim2.new(1, -50, 0, 14),
+                    Font = Enum.Font.Gotham,
+                    Text = Dropdown.Description,
+                    TextColor3 = iHook.CurrentTheme.TextDark,
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Left
+                })
+            end
+
+            local DropdownBtn = Utilities:Create("TextButton", {
+                Name = "Button",
+                Parent = DropdownFrame,
+                BackgroundColor3 = iHook.CurrentTheme.Tertiary,
+                BorderSizePixel = 0,
+                Position = UDim2.new(0, 12, 1, config.Description ~= "" and -28 or -24),
+                Size = UDim2.new(1, -24, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = "Select...",
+                TextColor3 = iHook.CurrentTheme.TextDark,
+                TextSize = 12,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 6),
+                Parent = DropdownBtn
+            })
+
+            Utilities:Create("UIPadding", {
+                Parent = DropdownBtn,
+                PaddingLeft = UDim.new(0, 8),
+                PaddingRight = UDim.new(0, 8)
+            })
+
+            local Arrow = Utilities:Create("TextLabel", {
+                Name = "Arrow",
+                Parent = DropdownBtn,
+                BackgroundTransparency = 1,
+                Position = UDim2.new(1, -20, 0, 0),
+                Size = UDim2.fromOffset(20, 20),
+                Font = Enum.Font.GothamBold,
+                Text = "▼",
+                TextColor3 = iHook.CurrentTheme.TextDark,
+                TextSize = 10
+            })
+
+            local DropdownList = Utilities:Create("ScrollingFrame", {
+                Name = "List",
+                Parent = DropdownFrame,
+                BackgroundColor3 = iHook.CurrentTheme.Tertiary,
+                BorderSizePixel = 0,
+                Position = UDim2.new(0, 12, 1, config.Description ~= "" and -6 or -2),
+                Size = UDim2.new(1, -24, 0, 0),
+                CanvasSize = UDim2.fromScale(1, 0),
+                ScrollBarThickness = 4,
+                ScrollBarImageColor3 = iHook.CurrentTheme.Accent,
+                Visible = false
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 6),
+                Parent = DropdownList
+            })
+
+            local ListLayout = Utilities:Create("UIListLayout", {
+                Parent = DropdownList,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 2)
+            })
+
+            Utilities:Create("UIPadding", {
+                Parent = DropdownList,
+                PaddingTop = UDim.new(0, 4),
+                PaddingBottom = UDim.new(0, 4),
+                PaddingLeft = UDim.new(0, 4),
+                PaddingRight = UDim.new(0, 4)
+            })
+
+            function Dropdown:Refresh()
+                DropdownList:ClearAllChildren()
+                
+                Utilities:Create("UIListLayout", {
+                    Parent = DropdownList,
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                    Padding = UDim.new(0, 2)
+                })
+
+                Utilities:Create("UIPadding", {
+                    Parent = DropdownList,
+                    PaddingTop = UDim.new(0, 4),
+                    PaddingBottom = UDim.new(0, 4),
+                    PaddingLeft = UDim.new(0, 4),
+                    PaddingRight = UDim.new(0, 4)
+                })
+
+                for i, value in ipairs(Dropdown.Values) do
+                    local OptionBtn = Utilities:Create("TextButton", {
+                        Name = "Option",
+                        Parent = DropdownList,
+                        BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                        BackgroundTransparency = Dropdown.Multi and (Dropdown.Value[value] and 0 or 1) or (Dropdown.Value == value and 0 or 1),
+                        BorderSizePixel = 0,
+                        Size = UDim2.new(1, -8, 0, 24),
+                        Font = Enum.Font.Gotham,
+                        Text = value,
+                        TextColor3 = iHook.CurrentTheme.Text,
+                        TextSize = 12,
+                        LayoutOrder = i
+                    })
+
+                    Utilities:Create("UICorner", {
+                        CornerRadius = UDim.new(0, 4),
+                        Parent = OptionBtn
+                    })
+
+                    OptionBtn.MouseButton1Click:Connect(function()
+                        if Dropdown.Multi then
+                            Dropdown.Value[value] = not Dropdown.Value[value]
+                            OptionBtn.BackgroundTransparency = Dropdown.Value[value] and 0 or 1
+                            
+                            local selected = {}
+                            for v, state in pairs(Dropdown.Value) do
+                                if state then table.insert(selected, v) end
+                            end
+                            DropdownBtn.Text = #selected > 0 and table.concat(selected, ", ") or "Select..."
+                        else
+                            Dropdown.Value = value
+                            DropdownBtn.Text = value
+                            Dropdown.Open = false
+                            DropdownList.Visible = false
+                            Utilities:Tween(DropdownFrame, {Size = UDim2.new(1, -8, 0, config.Description ~= "" and 70 or 50)}, 0.2)
+                            Utilities:Tween(Arrow, {Rotation = 0}, 0.2)
+                            
+                            for _, btn in pairs(DropdownList:GetChildren()) do
+                                if btn:IsA("TextButton") then
+                                    btn.BackgroundTransparency = 1
+                                end
+                            end
+                            OptionBtn.BackgroundTransparency = 0
+                        end
+
+                        for _, func in pairs(Dropdown._changed) do
+                            task.spawn(func, Dropdown.Value)
+                        end
+                    end)
+
+                    OptionBtn.MouseEnter:Connect(function()
+                        if not (Dropdown.Multi and Dropdown.Value[value] or Dropdown.Value == value) then
+                            Utilities:Tween(OptionBtn, {BackgroundTransparency = 0.5}, 0.1)
+                        end
+                    end)
+
+                    OptionBtn.MouseLeave:Connect(function()
+                        if not (Dropdown.Multi and Dropdown.Value[value] or Dropdown.Value == value) then
+                            Utilities:Tween(OptionBtn, {BackgroundTransparency = 1}, 0.1)
+                        end
+                    end)
+                end
+
+                local contentSize = DropdownList.UIListLayout.AbsoluteContentSize.Y + 8
+                DropdownList.CanvasSize = UDim2.fromOffset(0, contentSize)
+            end
+
+            DropdownBtn.MouseButton1Click:Connect(function()
+                Dropdown.Open = not Dropdown.Open
+                DropdownList.Visible = Dropdown.Open
+                
+                if Dropdown.Open then
+                    local listHeight = math.min(DropdownList.UIListLayout.AbsoluteContentSize.Y + 8, 120)
+                    DropdownList.Size = UDim2.new(1, -24, 0, listHeight)
+                    Utilities:Tween(DropdownFrame, {Size = UDim2.new(1, -8, 0, (config.Description ~= "" and 70 or 50) + listHeight + 4)}, 0.2)
+                    Utilities:Tween(Arrow, {Rotation = 180}, 0.2)
+                else
+                    Utilities:Tween(DropdownFrame, {Size = UDim2.new(1, -8, 0, config.Description ~= "" and 70 or 50)}, 0.2)
+                    Utilities:Tween(Arrow, {Rotation = 0}, 0.2)
+                end
+            end)
+
+            function Dropdown:SetValue(value)
+                if Dropdown.Multi then
+                    Dropdown.Value = value
+                    local selected = {}
+                    for v, state in pairs(value) do
+                        if state then table.insert(selected, v) end
+                    end
+                    DropdownBtn.Text = #selected > 0 and table.concat(selected, ", ") or "Select..."
+                else
+                    Dropdown.Value = value
+                    DropdownBtn.Text = value
+                end
+                Dropdown:Refresh()
+            end
+
+            function Dropdown:OnChanged(func)
+                table.insert(Dropdown._changed, func)
+                return func
+            end
+
+            Dropdown:Refresh()
+            if not Dropdown.Multi and type(Dropdown.Default) == "number" then
+                Dropdown:SetValue(Dropdown.Values[Dropdown.Default])
+            elseif Dropdown.Multi then
+                Dropdown:SetValue(Dropdown.Default)
+            end
+
+            table.insert(Tab.Elements, Dropdown)
+            return Dropdown
+        end
+
+        function Tab:AddColorpicker(id, config)
+            config = config or {}
+            local Colorpicker = {
+                Title = config.Title or "Colorpicker",
+                Description = config.Description or "",
+                Default = config.Default or Color3.fromRGB(255, 255, 255),
+                Value = config.Default or Color3.fromRGB(255, 255, 255),
+                Transparency = config.Transparency or nil,
+                _changed = {}
+            }
+
+            iHook.Options[id] = Colorpicker
+
+            local CPFrame = Utilities:Create("Frame", {
+                Name = "Colorpicker",
+                Parent = TabContent,
+                BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -8, 0, config.Description ~= "" and 60 or 40),
+                LayoutOrder = #Tab.Elements + 1
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = CPFrame
+            })
+
+            local CPTitle = Utilities:Create("TextLabel", {
+                Name = "Title",
+                Parent = CPFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, config.Description ~= "" and 8 or 10),
+                Size = UDim2.new(1, -70, 0, 18),
+                Font = Enum.Font.GothamMedium,
+                Text = Colorpicker.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            if config.Description ~= "" then
+                Utilities:Create("TextLabel", {
+                    Name = "Description",
+                    Parent = CPFrame,
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(12, 26),
+                    Size = UDim2.new(1, -70, 0, 26),
+                    Font = Enum.Font.Gotham,
+                    Text = Colorpicker.Description,
+                    TextColor3 = iHook.CurrentTheme.TextDark,
+                    TextSize = 12,
+                    TextWrapped = true,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextYAlignment = Enum.TextYAlignment.Top
+                })
+            end
+
+            local ColorDisplay = Utilities:Create("TextButton", {
+                Name = "Display",
+                Parent = CPFrame,
+                BackgroundColor3 = Colorpicker.Default,
+                BorderSizePixel = 0,
+                Position = UDim2.new(1, -52, 0.5, -10),
+                Size = UDim2.fromOffset(44, 20),
+                Text = ""
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 6),
+                Parent = ColorDisplay
+            })
+
+            Utilities:Create("UIStroke", {
+                Parent = ColorDisplay,
+                Color = iHook.CurrentTheme.Border,
+                Thickness = 1
+            })
+
+            function Colorpicker:SetValueRGB(color)
+                Colorpicker.Value = color
+                ColorDisplay.BackgroundColor3 = color
+                for _, func in pairs(Colorpicker._changed) do
+                    task.spawn(func)
+                end
+            end
+
+            function Colorpicker:OnChanged(func)
+                table.insert(Colorpicker._changed, func)
+                return func
+            end
+
+            ColorDisplay.MouseButton1Click:Connect(function()
+                -- Basic color picker (simplified)
+                local r = math.random(0, 255)
+                local g = math.random(0, 255)
+                local b = math.random(0, 255)
+                Colorpicker:SetValueRGB(Color3.fromRGB(r, g, b))
+            end)
+
+            table.insert(Tab.Elements, Colorpicker)
+            return Colorpicker
+        end
+
+        function Tab:AddKeybind(id, config)
+            config = config or {}
+            local Keybind = {
+                Title = config.Title or "Keybind",
+                Default = config.Default or "None",
+                Mode = config.Mode or "Toggle",
+                Value = config.Default or "None",
+                Callback = config.Callback or function() end,
+                ChangedCallback = config.ChangedCallback or function() end,
+                _click = {},
+                _changed = {},
+                State = false
+            }
+
+            iHook.Options[id] = Keybind
+
+            local KBFrame = Utilities:Create("Frame", {
+                Name = "Keybind",
+                Parent = TabContent,
+                BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -8, 0, 40),
+                LayoutOrder = #Tab.Elements + 1
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = KBFrame
+            })
+
+            local KBTitle = Utilities:Create("TextLabel", {
+                Name = "Title",
+                Parent = KBFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, 10),
+                Size = UDim2.new(1, -100, 0, 18),
+                Font = Enum.Font.GothamMedium,
+                Text = Keybind.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            local KBButton = Utilities:Create("TextButton", {
+                Name = "Button",
+                Parent = KBFrame,
+                BackgroundColor3 = iHook.CurrentTheme.Tertiary,
+                BorderSizePixel = 0,
+                Position = UDim2.new(1, -80, 0.5, -10),
+                Size = UDim2.fromOffset(72, 20),
+                Font = Enum.Font.Gotham,
+                Text = Keybind.Default,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 11
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 6),
+                Parent = KBButton
+            })
+
+            function Keybind:SetValue(key, mode)
+                Keybind.Value = key
+                if mode then Keybind.Mode = mode end
+                KBButton.Text = key
+                task.spawn(Keybind.ChangedCallback, key)
+                for _, func in pairs(Keybind._changed) do
+                    task.spawn(func)
+                end
+            end
+
+            function Keybind:OnClick(func)
+                table.insert(Keybind._click, func)
+                return func
+            end
+
+            function Keybind:OnChanged(func)
+                table.insert(Keybind._changed, func)
+                return func
+            end
+
+            function Keybind:GetState()
+                return Keybind.State
+            end
+
+            local binding = false
+            KBButton.MouseButton1Click:Connect(function()
+                binding = true
+                KBButton.Text = "..."
+                
+                local connection
+                connection = UserInputService.InputBegan:Connect(function(input, gpe)
+                    if not binding then return end
+                    
+                    local key = input.KeyCode.Name
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                        key = "MB1"
+                    elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+                        key = "MB2"
+                    end
+                    
+                    binding = false
+                    Keybind:SetValue(key)
+                    connection:Disconnect()
+                end)
+            end)
+
+            UserInputService.InputBegan:Connect(function(input, gpe)
+                if gpe or binding then return end
+                
+                local key = input.KeyCode.Name
+                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    key = "MB1"
+                elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+                    key = "MB2"
+                end
+                
+                if key == Keybind.Value then
+                    if Keybind.Mode == "Toggle" then
+                        Keybind.State = not Keybind.State
+                        task.spawn(Keybind.Callback, Keybind.State)
+                        for _, func in pairs(Keybind._click) do
+                            task.spawn(func)
+                        end
+                    elseif Keybind.Mode == "Hold" then
+                        Keybind.State = true
+                        task.spawn(Keybind.Callback, true)
+                    else
+                        task.spawn(Keybind.Callback, true)
+                    end
+                end
+            end)
+
+            UserInputService.InputEnded:Connect(function(input)
+                local key = input.KeyCode.Name
+                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    key = "MB1"
+                elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+                    key = "MB2"
+                end
+                
+                if key == Keybind.Value and Keybind.Mode == "Hold" then
+                    Keybind.State = false
+                    task.spawn(Keybind.Callback, false)
+                end
+            end)
+
+            table.insert(Tab.Elements, Keybind)
+            return Keybind
+        end
+
+        function Tab:AddInput(id, config)
+            config = config or {}
+            local Input = {
+                Title = config.Title or "Input",
+                Default = config.Default or "",
+                Placeholder = config.Placeholder or "Enter text...",
+                Numeric = config.Numeric or false,
+                Finished = config.Finished or false,
+                Value = config.Default or "",
+                Callback = config.Callback or function() end,
+                _changed = {}
+            }
+
+            iHook.Options[id] = Input
+
+            local InputFrame = Utilities:Create("Frame", {
+                Name = "Input",
+                Parent = TabContent,
+                BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -8, 0, 70),
+                LayoutOrder = #Tab.Elements + 1
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = InputFrame
+            })
+
+            local InputTitle = Utilities:Create("TextLabel", {
+                Name = "Title",
+                Parent = InputFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, 8),
+                Size = UDim2.new(1, -24, 0, 18),
+                Font = Enum.Font.GothamMedium,
+                Text = Input.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            local InputBox = Utilities:Create("TextBox", {
+                Name = "Box",
+                Parent = InputFrame,
+                BackgroundColor3 = iHook.CurrentTheme.Tertiary,
+                BorderSizePixel = 0,
+                Position = UDim2.fromOffset(12, 32),
+                Size = UDim2.new(1, -24, 0, 28),
+                Font = Enum.Font.Gotham,
+                PlaceholderText = Input.Placeholder,
+                PlaceholderColor3 = iHook.CurrentTheme.TextDark,
+                Text = Input.Default,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 12,
+                ClearTextOnFocus = false
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 6),
+                Parent = InputBox
+            })
+
+            Utilities:Create("UIPadding", {
+                Parent = InputBox,
+                PaddingLeft = UDim.new(0, 10),
+                PaddingRight = UDim.new(0, 10)
+            })
+
+            if Input.Numeric then
+                InputBox:GetPropertyChangedSignal("Text"):Connect(function()
+                    InputBox.Text = InputBox.Text:gsub("%D", "")
+                end)
+            end
+
+            function Input:OnChanged(func)
+                table.insert(Input._changed, func)
+                return func
+            end
+
+            if Input.Finished then
+                InputBox.FocusLost:Connect(function(enter)
+                    Input.Value = InputBox.Text
+                    task.spawn(Input.Callback, Input.Value)
+                    for _, func in pairs(Input._changed) do
+                        task.spawn(func)
+                    end
+                end)
+            else
+                InputBox:GetPropertyChangedSignal("Text"):Connect(function()
+                    Input.Value = InputBox.Text
+                    task.spawn(Input.Callback, Input.Value)
+                    for _, func in pairs(Input._changed) do
+                        task.spawn(func)
+                    end
+                end)
+            end
+
+            table.insert(Tab.Elements, Input)
+            return Input
+        end
+
+        function Tab:AddParagraph(config)
+            config = config or {}
+            local Paragraph = {
+                Title = config.Title or "Paragraph",
+                Content = config.Content or "No content"
+            }
+
+            local PFrame = Utilities:Create("Frame", {
+                Name = "Paragraph",
+                Parent = TabContent,
+                BackgroundColor3 = iHook.CurrentTheme.Secondary,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -8, 0, 60),
+                LayoutOrder = #Tab.Elements + 1
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = PFrame
+            })
+
+            Utilities:Create("TextLabel", {
+                Name = "Title",
+                Parent = PFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, 8),
+                Size = UDim2.new(1, -24, 0, 18),
+                Font = Enum.Font.GothamBold,
+                Text = Paragraph.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            local ContentLabel = Utilities:Create("TextLabel", {
+                Name = "Content",
+                Parent = PFrame,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(12, 28),
+                Size = UDim2.new(1, -24, 1, -36),
+                Font = Enum.Font.Gotham,
+                Text = Paragraph.Content,
+                TextColor3 = iHook.CurrentTheme.TextDark,
+                TextSize = 12,
+                TextWrapped = true,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextYAlignment = Enum.TextYAlignment.Top
+            })
+
+            local textBounds = Utilities:GetTextBounds(Paragraph.Content, Enum.Font.Gotham, 12)
+            PFrame.Size = UDim2.new(1, -8, 0, math.max(60, textBounds.Y + 40))
+
+            table.insert(Tab.Elements, Paragraph)
+            return Paragraph
+        end
+
+        table.insert(Window.Tabs, Tab)
+        if #Window.Tabs == 1 then
+            task.wait()
+            SelectTab()
+        end
+
+        return Tab
+    end
+
+    function Window:SelectTab(index)
+        local tab = Window.Tabs[index]
+        if tab and tab.Button then
+            tab.Button.MouseButton1Click:Fire()
+        end
+    end
+
+    function Window:Dialog(config)
+        config = config or {}
+        local Dialog = {
+            Title = config.Title or "Dialog",
+            Content = config.Content or "Content",
+            Buttons = config.Buttons or {}
+        }
+
+        local Overlay = Utilities:Create("Frame", {
+            Name = "DialogOverlay",
+            Parent = iHook.ScreenGui,
+            BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+            BackgroundTransparency = 0.5,
+            BorderSizePixel = 0,
+            Size = UDim2.fromScale(1, 1),
+            ZIndex = 10
+        })
+
+        local DialogFrame = Utilities:Create("Frame", {
+            Name = "Dialog",
+            Parent = Overlay,
+            BackgroundColor3 = iHook.CurrentTheme.Background,
+            BorderSizePixel = 0,
+            Position = UDim2.fromScale(0.5, 0.5),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.fromOffset(400, 200),
+            ZIndex = 11
+        })
+
+        Utilities:Create("UICorner", {
+            CornerRadius = UDim.new(0, 12),
+            Parent = DialogFrame
+        })
+
+        Utilities:Create("TextLabel", {
+            Name = "Title",
+            Parent = DialogFrame,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(20, 20),
+            Size = UDim2.new(1, -40, 0, 24),
+            Font = Enum.Font.GothamBold,
+            Text = Dialog.Title,
+            TextColor3 = iHook.CurrentTheme.Text,
+            TextSize = 18,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 12
+        })
+
+        Utilities:Create("TextLabel", {
+            Name = "Content",
+            Parent = DialogFrame,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(20, 54),
+            Size = UDim2.new(1, -40, 0, 80),
+            Font = Enum.Font.Gotham,
+            Text = Dialog.Content,
+            TextColor3 = iHook.CurrentTheme.TextDark,
+            TextSize = 14,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+            ZIndex = 12
+        })
+
+        local ButtonContainer = Utilities:Create("Frame", {
+            Name = "Buttons",
+            Parent = DialogFrame,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 20, 1, -50),
+            Size = UDim2.new(1, -40, 0, 36),
+            ZIndex = 12
+        })
+
+        Utilities:Create("UIListLayout", {
+            Parent = ButtonContainer,
+            FillDirection = Enum.FillDirection.Horizontal,
+            HorizontalAlignment = Enum.HorizontalAlignment.Right,
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 8)
+        })
+
+        for i, btn in ipairs(Dialog.Buttons) do
+            local DialogBtn = Utilities:Create("TextButton", {
+                Name = "Btn" .. i,
+                Parent = ButtonContainer,
+                BackgroundColor3 = i == 1 and iHook.CurrentTheme.Accent or iHook.CurrentTheme.Tertiary,
+                BorderSizePixel = 0,
+                Size = UDim2.fromOffset(100, 36),
+                Font = Enum.Font.GothamMedium,
+                Text = btn.Title,
+                TextColor3 = iHook.CurrentTheme.Text,
+                TextSize = 13,
+                ZIndex = 13
+            })
+
+            Utilities:Create("UICorner", {
+                CornerRadius = UDim.new(0, 8),
+                Parent = DialogBtn
+            })
+
+            DialogBtn.MouseButton1Click:Connect(function()
+                if btn.Callback then
+                    task.spawn(btn.Callback)
+                end
+                Overlay:Destroy()
+            end)
+        end
+    end
+
+    return Window
+end
+
+function iHook:Notify(config)
+    config = config or {}
+    local Notification = {
+        Title = config.Title or "Notification",
+        Content = config.Content or "",
+        SubContent = config.SubContent or "",
+        Duration = config.Duration or 5
+    }
+
+    local NotifFrame = Utilities:Create("Frame", {
+        Name = "Notification",
+        Parent = iHook.ScreenGui,
+        BackgroundColor3 = iHook.CurrentTheme.Secondary,
+        BorderSizePixel = 0,
+        Position = UDim2.new(1, -320, 1, 0),
+        Size = UDim2.fromOffset(300, Notification.SubContent ~= "" and 90 or 70),
+        ZIndex = 100
+    })
+
+    Utilities:Create("UICorner", {
+        CornerRadius = UDim.new(0, 10),
+        Parent = NotifFrame
+    })
+
+    Utilities:Create("Frame", {
+        Name = "Accent",
+        Parent = NotifFrame,
+        BackgroundColor3 = iHook.CurrentTheme.Accent,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 3)
+    })
+
+    Utilities:Create("TextLabel", {
+        Name = "Title",
+        Parent = NotifFrame,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(12, 12),
+        Size = UDim2.new(1, -24, 0, 18),
+        Font = Enum.Font.GothamBold,
+        Text = Notification.Title,
+        TextColor3 = iHook.CurrentTheme.Text,
+        TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left
+    })
+
+    Utilities:Create("TextLabel", {
+        Name = "Content",
+        Parent = NotifFrame,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(12, 32),
+        Size = UDim2.new(1, -24, 0, 30),
+        Font = Enum.Font.Gotham,
+        Text = Notification.Content,
+        TextColor3 = iHook.CurrentTheme.TextDark,
+        TextSize = 12,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top
+    })
+
+    Utilities:Tween(NotifFrame, {Position = UDim2.new(1, -320, 1, -100)}, 0.5, Enum.EasingStyle.Back)
+
+    if Notification.Duration then
+        task.wait(Notification.Duration)
+        Utilities:Tween(NotifFrame, {Position = UDim2.new(1, -320, 1, 0)}, 0.3)
+        task.wait(0.3)
+        NotifFrame:Destroy()
+    end
+end
+
+return iHook
