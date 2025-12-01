@@ -1,9 +1,5 @@
 --[[
-    iHook UI Library v1.0
-    Modern, Mobil Uyumlu, Executor-Friendly UI Kütüphanesi
-    
-    KULLANIM:
-    local iHook = loadstring(game:HttpGet("YOUR_URL_HERE"))()
+
 ]]
 
 local iHook = {}
@@ -933,7 +929,7 @@ function iHook:CreateWindow(config)
                 Parent = TabContent,
                 BackgroundColor3 = iHook.CurrentTheme.Secondary,
                 BorderSizePixel = 0,
-                Size = UDim2.new(1, -8, 0, config.Description ~= "" and 70 : 50),
+                Size = UDim2.new(1, -8, 0, config.Description ~= "" and 70 or 50),
                 ClipsDescendants = true,
                 LayoutOrder = #Tab.Elements + 1
             })
