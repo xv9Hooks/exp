@@ -320,7 +320,7 @@ end
 function ProUI:CreateWindow(config)
     config = config or {}
     local windowName = config.Name or "ProUI"
-    local windowSize = config.Size or (IsMobile and UDim2.new(0, 340, 0, 420) or UDim2.new(0, 580, 0, 400))
+    local windowSize = config.Size or (IsMobile and UDim2.new(0, 540, 0, 420) or UDim2.new(0, 580, 0, 400))
     local loadingTitle = config.LoadingTitle or "ProUI"
     local loadingSubtitle = config.LoadingSubtitle or "Yükleniyor..."
     local theme = config.Theme or "Dark"
