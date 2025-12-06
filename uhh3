@@ -1,149 +1,99 @@
--- InterfaceManager.lua
+--[[
+    NexusUI InterfaceManager Addon
+    Tema ve arayüz ayarları yönetimi
+]]
+
 local InterfaceManager = {}
-InterfaceManager.Folder = "ProfessionalUI"
+InterfaceManager.__index = InterfaceManager
+
+local HttpService = game:GetService("HttpService")
+
 InterfaceManager.Library = nil
+InterfaceManager.Folder = "NexusUI"
+InterfaceManager.Settings = {
+    Theme = "Dark",
+    Transparency = false,
+    MenuKeybind = "RightControl"
+}
 
 function InterfaceManager:SetLibrary(library)
-    InterfaceManager.Library = library
+    self.Library = library
 end
 
 function InterfaceManager:SetFolder(folder)
-    InterfaceManager.Folder = folder
-    if not isfolder(InterfaceManager.Folder) then
-        makefolder(InterfaceManager.Folder)
+    self.Folder = folder
+    
+    pcall(function()
+        if not isfolder(self.Folder) then
+            makefolder(self.Folder)
+        end
+    end)
+end
+
+function InterfaceManager:SaveSettings()
+    local success = pcall(function()
+        writefile(
+            self.Folder .. "/interface.json",
+            HttpService:JSONEncode(self.Settings)
+        )
+    end)
+    return success
+end
+
+function InterfaceManager:LoadSettings()
+    local success, result = pcall(function()
+        return readfile(self.Folder .. "/interface.json")
+    end)
+    
+    if success then
+        local data = HttpService:JSONDecode(result)
+        for key, value in pairs(data) do
+            self.Settings[key] = value
+        end
     end
+    
+    return success
 end
 
 function InterfaceManager:BuildInterfaceSection(tab)
-    local InterfaceSection = tab:AddParagraph({
-        Title = "Interface Settings",
-        Content = "Customize the UI appearance and behavior"
-    })
-
-    -- Theme Color
-    tab:AddColorpicker("ThemeAccent", {
-        Title = "Accent Color",
-        Description = "Change the accent color of the UI",
-        Default = InterfaceManager.Library.Theme.Accent,
-        Callback = function()
-            local color = InterfaceManager.Library.Flags["ThemeAccent"]
-            InterfaceManager.Library.Theme.Accent = color
-            InterfaceManager:UpdateTheme()
-        end
-    })
-
-    -- Background Transparency
-    tab:AddSlider("BackgroundTransparency", {
-        Title = "Transparency",
-        Description = "Adjust background transparency",
-        Min = 0,
-        Max = 100,
-        Default = InterfaceManager.Library.Theme.Transparency * 100,
-        Rounding = 1,
-        Callback = function(value)
-            InterfaceManager.Library.Theme.Transparency = value / 100
-            InterfaceManager:UpdateTheme()
-        end
-    })
-
-    -- UI Scale (for mobile)
-    tab:AddSlider("UIScale", {
-        Title = "UI Scale",
-        Description = "Adjust UI size (useful for mobile)",
-        Min = 50,
-        Max = 150,
-        Default = 100,
-        Rounding = 1,
-        Callback = function(value)
-            InterfaceManager:SetScale(value / 100)
-        end
-    })
-
-    -- FPS Counter
-    local FPSLabel
-    tab:AddToggle("ShowFPS", {
-        Title = "Show FPS Counter",
-        Description = "Display frames per second",
-        Default = false,
-        Callback = function(value)
-            if value and not FPSLabel then
-                FPSLabel = Instance.new("TextLabel")
-                FPSLabel.Name = "FPSCounter"
-                FPSLabel.AnchorPoint = Vector2.new(1, 0)
-                FPSLabel.Position = UDim2.new(1, -10, 0, 10)
-                FPSLabel.Size = UDim2.fromOffset(80, 30)
-                FPSLabel.BackgroundColor3 = InterfaceManager.Library.Theme.Background
-                FPSLabel.BackgroundTransparency = 0.3
-                FPSLabel.BorderSizePixel = 0
-                FPSLabel.Text = "FPS: 60"
-                FPSLabel.TextColor3 = Color3.new(1, 1, 1)
-                FPSLabel.TextSize = 14
-                FPSLabel.Font = Enum.Font.GothamBold
-                FPSLabel.Parent = InterfaceManager.Library.ScreenGui or game:GetService("CoreGui"):FindFirstChild("ProfessionalUI")
-
-                local corner = Instance.new("UICorner")
-                corner.CornerRadius = UDim.new(0, 6)
-                corner.Parent = FPSLabel
-
-                local lastUpdate = tick()
-                local frames = 0
-
-                game:GetService("RunService").RenderStepped:Connect(function()
-                    if InterfaceManager.Library.Flags["ShowFPS"] then
-                        frames = frames + 1
-                        if tick() - lastUpdate >= 1 then
-                            FPSLabel.Text = "FPS: " .. frames
-                            frames = 0
-                            lastUpdate = tick()
-                        end
-                    end
-                end)
-            elseif not value and FPSLabel then
-                FPSLabel:Destroy()
-                FPSLabel = nil
-            end
-        end
-    })
-
-    -- Performance Mode
-    tab:AddToggle("PerformanceMode", {
-        Title = "Performance Mode",
-        Description = "Reduce animations for better performance",
-        Default = false,
-        Callback = function(value)
-            -- Implement performance optimizations
-        end
-    })
-
-    -- Mobile Optimizations
-    if game:GetService("UserInputService").TouchEnabled then
-        tab:AddParagraph({
-            Title = "Mobile Mode",
-            Content = "Mobile optimizations are automatically enabled!"
-        })
+    if not self.Library or not tab then return end
+    
+    self:LoadSettings()
+    
+    tab:AddSection("Interface")
+    
+    -- Theme Selector
+    local themes = {}
+    for themeName, _ in pairs(self.Library.Themes) do
+        table.insert(themes, themeName)
     end
-end
-
-function InterfaceManager:UpdateTheme()
-    -- Update all UI elements with new theme colors
-    -- This is a simplified version
-    for _, obj in pairs(game:GetService("CoreGui"):GetDescendants()) do
-        if obj:IsA("Frame") or obj:IsA("TextButton") then
-            if obj.BackgroundColor3 == InterfaceManager.Library.Theme.Accent then
-                obj.BackgroundColor3 = InterfaceManager.Library.Flags["ThemeAccent"]
-            end
+    
+    tab:AddDropdown("InterfaceTheme", {
+        Title = "Theme",
+        Description = "Change the UI color theme",
+        Values = themes,
+        Default = table.find(themes, self.Settings.Theme) or 1,
+        Callback = function(value)
+            self.Library:SetTheme(value)
+            self.Settings.Theme = value
+            self:SaveSettings()
         end
-    end
-end
-
-function InterfaceManager:SetScale(scale)
-    local screenGui = InterfaceManager.Library.ScreenGui or game:GetService("CoreGui"):FindFirstChild("ProfessionalUI")
-    if screenGui then
-        for _, obj in pairs(screenGui:GetDescendants()) do
-            if obj:IsA("UIScale") then
-                obj.Scale = scale
-            end
+    })
+    
+    -- Menu Keybind
+    tab:AddKeybind("MenuKeybind", {
+        Title = "Menu Toggle Key",
+        Default = self.Settings.MenuKeybind,
+        Mode = "Toggle",
+        ChangedCallback = function(value)
+            self.Settings.MenuKeybind = value
+            self:SaveSettings()
         end
+    })
+    
+    -- Apply saved theme
+    if self.Settings.Theme then
+        self.Library:SetTheme(self.Settings.Theme)
     end
 end
 
