@@ -6,6 +6,21 @@
     Kullanım:
     local NexusUI = loadstring(game:HttpGet("YOUR_RAW_LINK"))()
 ]]
+NexusUI = NexusUI or {}
+
+NexusUI.Window = NexusUI.Window or {}
+
+function NexusUI.Window:AddTabMethods(Tab)
+    Tab._methodsAdded = true
+end
+
+function NexusUI.Window:ExtendTabMethods(Tab)
+    Tab._extended = true
+end
+
+function NexusUI.Window:FinalTabMethods(Tab)
+    Tab._finalized = true
+end
 
 local NexusUI = {}
 NexusUI.Window = {}
@@ -2656,9 +2671,18 @@ function NexusUI:CreateWindow(options)
         local Tab = originalWindowAddTab(self, tabOptions)
         
         -- Add all element methods to Tab
-        NexusUI.Window:AddTabMethods(Tab)
-        NexusUI.Window:ExtendTabMethods(Tab)
-        NexusUI.Window:FinalTabMethods(Tab)
+        do
+    local W = NexusUI.Window
+    if type(W.AddTabMethods) == "function" then
+        W:AddTabMethods(Tab)
+    end
+    if type(W.ExtendTabMethods) == "function" then
+        W:ExtendTabMethods(Tab)
+    end
+    if type(W.FinalTabMethods) == "function" then
+        W:FinalTabMethods(Tab)
+    end
+end
         
         return Tab
     end
