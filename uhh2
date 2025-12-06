@@ -1,0 +1,205 @@
+-- SaveManager.lua
+local SaveManager = {}
+SaveManager.Folder = "ProfessionalUI"
+SaveManager.Ignore = {}
+SaveManager.Library = nil
+
+local HttpService = game:GetService("HttpService")
+
+function SaveManager:SetLibrary(library)
+    SaveManager.Library = library
+end
+
+function SaveManager:SetFolder(folder)
+    SaveManager.Folder = folder
+    if not isfolder(SaveManager.Folder) then
+        makefolder(SaveManager.Folder)
+    end
+end
+
+function SaveManager:SetIgnoreIndexes(indexes)
+    for _, index in pairs(indexes) do
+        SaveManager.Ignore[index] = true
+    end
+end
+
+function SaveManager:IgnoreThemeSettings()
+    SaveManager.Ignore["ThemeManager_ThemeList"] = true
+    SaveManager.Ignore["ThemeManager_CustomTheme"] = true
+end
+
+function SaveManager:BuildConfigSection(tab)
+    local configFolder = SaveManager.Folder .. "/configs"
+    if not isfolder(configFolder) then
+        makefolder(configFolder)
+    end
+
+    local ConfigSection = tab:AddParagraph({
+        Title = "Configuration",
+        Content = "Save and load your settings"
+    })
+
+    local ConfigList = {}
+    local function RefreshConfigs()
+        ConfigList = {}
+        for _, file in pairs(listfiles(configFolder)) do
+            local name = file:gsub(configFolder .. "/", ""):gsub(".json", "")
+            table.insert(ConfigList, name)
+        end
+        return ConfigList
+    end
+
+    local ConfigDropdown = tab:AddDropdown("ConfigList", {
+        Title = "Config List",
+        Values = RefreshConfigs(),
+        Multi = false,
+        Default = 1
+    })
+
+    local ConfigName = tab:AddInput("ConfigName", {
+        Title = "Config Name",
+        Default = "MyConfig",
+        Placeholder = "Enter config name..."
+    })
+
+    tab:AddButton({
+        Title = "Save Config",
+        Description = "Save current settings",
+        Callback = function()
+            local name = SaveManager.Library.Flags["ConfigName"] or "MyConfig"
+            SaveManager:SaveConfig(name)
+            ConfigDropdown.Values = RefreshConfigs()
+            SaveManager.Library:Notify({
+                Title = "Config Saved",
+                Content = "Configuration '" .. name .. "' has been saved!",
+                Duration = 3
+            })
+        end
+    })
+
+    tab:AddButton({
+        Title = "Load Config",
+        Description = "Load selected configuration",
+        Callback = function()
+            local selected = SaveManager.Library.Flags["ConfigList"]
+            if selected then
+                SaveManager:LoadConfig(selected)
+                SaveManager.Library:Notify({
+                    Title = "Config Loaded",
+                    Content = "Configuration '" .. selected .. "' has been loaded!",
+                    Duration = 3
+                })
+            end
+        end
+    })
+
+    tab:AddButton({
+        Title = "Delete Config",
+        Description = "Delete selected configuration",
+        Callback = function()
+            local selected = SaveManager.Library.Flags["ConfigList"]
+            if selected then
+                SaveManager:DeleteConfig(selected)
+                ConfigDropdown.Values = RefreshConfigs()
+                SaveManager.Library:Notify({
+                    Title = "Config Deleted",
+                    Content = "Configuration '" .. selected .. "' has been deleted!",
+                    Duration = 3
+                })
+            end
+        end
+    })
+
+    tab:AddButton({
+        Title = "Refresh List",
+        Description = "Refresh configuration list",
+        Callback = function()
+            ConfigDropdown.Values = RefreshConfigs()
+        end
+    })
+
+    local AutoloadToggle = tab:AddToggle("AutoloadConfig", {
+        Title = "Autoload",
+        Description = "Automatically load config on startup",
+        Default = false
+    })
+end
+
+function SaveManager:SaveConfig(name)
+    local configFolder = SaveManager.Folder .. "/configs"
+    if not isfolder(configFolder) then
+        makefolder(configFolder)
+    end
+
+    local data = {}
+    for flag, value in pairs(SaveManager.Library.Flags) do
+        if not SaveManager.Ignore[flag] then
+            if typeof(value) == "Color3" then
+                data[flag] = {value.R, value.G, value.B}
+            elseif typeof(value) == "EnumItem" then
+                data[flag] = tostring(value)
+            else
+                data[flag] = value
+            end
+        end
+    end
+
+    local success, err = pcall(function()
+        writefile(configFolder .. "/" .. name .. ".json", HttpService:JSONEncode(data))
+    end)
+
+    return success
+end
+
+function SaveManager:LoadConfig(name)
+    local configFolder = SaveManager.Folder .. "/configs"
+    local filePath = configFolder .. "/" .. name .. ".json"
+
+    if not isfile(filePath) then
+        return false
+    end
+
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(readfile(filePath))
+    end)
+
+    if success and data then
+        for flag, value in pairs(data) do
+            if SaveManager.Library.Options[flag] then
+                if typeof(value) == "table" and #value == 3 then
+                    SaveManager.Library.Options[flag]:SetValue(Color3.new(value[1], value[2], value[3]))
+                else
+                    if SaveManager.Library.Options[flag].SetValue then
+                        SaveManager.Library.Options[flag]:SetValue(value)
+                    end
+                end
+            end
+        end
+        return true
+    end
+
+    return false
+end
+
+function SaveManager:DeleteConfig(name)
+    local configFolder = SaveManager.Folder .. "/configs"
+    local filePath = configFolder .. "/" .. name .. ".json"
+
+    if isfile(filePath) then
+        delfile(filePath)
+        return true
+    end
+    return false
+end
+
+function SaveManager:LoadAutoloadConfig()
+    if SaveManager.Library.Flags["AutoloadConfig"] then
+        local autoloadFile = SaveManager.Folder .. "/autoload.txt"
+        if isfile(autoloadFile) then
+            local configName = readfile(autoloadFile)
+            SaveManager:LoadConfig(configName)
+        end
+    end
+end
+
+return SaveManager
