@@ -1,0 +1,150 @@
+-- InterfaceManager.lua
+local InterfaceManager = {}
+InterfaceManager.Folder = "ProfessionalUI"
+InterfaceManager.Library = nil
+
+function InterfaceManager:SetLibrary(library)
+    InterfaceManager.Library = library
+end
+
+function InterfaceManager:SetFolder(folder)
+    InterfaceManager.Folder = folder
+    if not isfolder(InterfaceManager.Folder) then
+        makefolder(InterfaceManager.Folder)
+    end
+end
+
+function InterfaceManager:BuildInterfaceSection(tab)
+    local InterfaceSection = tab:AddParagraph({
+        Title = "Interface Settings",
+        Content = "Customize the UI appearance and behavior"
+    })
+
+    -- Theme Color
+    tab:AddColorpicker("ThemeAccent", {
+        Title = "Accent Color",
+        Description = "Change the accent color of the UI",
+        Default = InterfaceManager.Library.Theme.Accent,
+        Callback = function()
+            local color = InterfaceManager.Library.Flags["ThemeAccent"]
+            InterfaceManager.Library.Theme.Accent = color
+            InterfaceManager:UpdateTheme()
+        end
+    })
+
+    -- Background Transparency
+    tab:AddSlider("BackgroundTransparency", {
+        Title = "Transparency",
+        Description = "Adjust background transparency",
+        Min = 0,
+        Max = 100,
+        Default = InterfaceManager.Library.Theme.Transparency * 100,
+        Rounding = 1,
+        Callback = function(value)
+            InterfaceManager.Library.Theme.Transparency = value / 100
+            InterfaceManager:UpdateTheme()
+        end
+    })
+
+    -- UI Scale (for mobile)
+    tab:AddSlider("UIScale", {
+        Title = "UI Scale",
+        Description = "Adjust UI size (useful for mobile)",
+        Min = 50,
+        Max = 150,
+        Default = 100,
+        Rounding = 1,
+        Callback = function(value)
+            InterfaceManager:SetScale(value / 100)
+        end
+    })
+
+    -- FPS Counter
+    local FPSLabel
+    tab:AddToggle("ShowFPS", {
+        Title = "Show FPS Counter",
+        Description = "Display frames per second",
+        Default = false,
+        Callback = function(value)
+            if value and not FPSLabel then
+                FPSLabel = Instance.new("TextLabel")
+                FPSLabel.Name = "FPSCounter"
+                FPSLabel.AnchorPoint = Vector2.new(1, 0)
+                FPSLabel.Position = UDim2.new(1, -10, 0, 10)
+                FPSLabel.Size = UDim2.fromOffset(80, 30)
+                FPSLabel.BackgroundColor3 = InterfaceManager.Library.Theme.Background
+                FPSLabel.BackgroundTransparency = 0.3
+                FPSLabel.BorderSizePixel = 0
+                FPSLabel.Text = "FPS: 60"
+                FPSLabel.TextColor3 = Color3.new(1, 1, 1)
+                FPSLabel.TextSize = 14
+                FPSLabel.Font = Enum.Font.GothamBold
+                FPSLabel.Parent = InterfaceManager.Library.ScreenGui or game:GetService("CoreGui"):FindFirstChild("ProfessionalUI")
+
+                local corner = Instance.new("UICorner")
+                corner.CornerRadius = UDim.new(0, 6)
+                corner.Parent = FPSLabel
+
+                local lastUpdate = tick()
+                local frames = 0
+
+                game:GetService("RunService").RenderStepped:Connect(function()
+                    if InterfaceManager.Library.Flags["ShowFPS"] then
+                        frames = frames + 1
+                        if tick() - lastUpdate >= 1 then
+                            FPSLabel.Text = "FPS: " .. frames
+                            frames = 0
+                            lastUpdate = tick()
+                        end
+                    end
+                end)
+            elseif not value and FPSLabel then
+                FPSLabel:Destroy()
+                FPSLabel = nil
+            end
+        end
+    })
+
+    -- Performance Mode
+    tab:AddToggle("PerformanceMode", {
+        Title = "Performance Mode",
+        Description = "Reduce animations for better performance",
+        Default = false,
+        Callback = function(value)
+            -- Implement performance optimizations
+        end
+    })
+
+    -- Mobile Optimizations
+    if game:GetService("UserInputService").TouchEnabled then
+        tab:AddParagraph({
+            Title = "Mobile Mode",
+            Content = "Mobile optimizations are automatically enabled!"
+        })
+    end
+end
+
+function InterfaceManager:UpdateTheme()
+    -- Update all UI elements with new theme colors
+    -- This is a simplified version
+    for _, obj in pairs(game:GetService("CoreGui"):GetDescendants()) do
+        if obj:IsA("Frame") or obj:IsA("TextButton") then
+            if obj.BackgroundColor3 == InterfaceManager.Library.Theme.Accent then
+                obj.BackgroundColor3 = InterfaceManager.Library.Flags["ThemeAccent"]
+            end
+        end
+    end
+end
+
+function InterfaceManager:SetScale(scale)
+    local screenGui = InterfaceManager.Library.ScreenGui or game:GetService("CoreGui"):FindFirstChild("ProfessionalUI")
+    if screenGui then
+        for _, obj in pairs(screenGui:GetDescendants()) do
+            if obj:IsA("UIScale") then
+                obj.Scale = scale
+            end
+        end
+    end
+end
+
+return InterfaceManager
