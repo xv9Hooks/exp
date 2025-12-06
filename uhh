@@ -8,6 +8,7 @@
 ]]
 
 local NexusUI = {}
+NexusUI.Window = {}
 NexusUI.__index = NexusUI
 NexusUI.Version = "1.0.0"
 NexusUI.Unloaded = false
