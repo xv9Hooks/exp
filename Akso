@@ -1,1313 +1,786 @@
---[[
-    ╔═══════════════════════════════════════════════════════════╗
-    ║              SMOOTH LIBRARY UI v2.0                       ║
-    ║         Mobile Ready • Executor Support • Fast            ║
-    ║              GitHub: YourUsername/LibraryUI               ║
-    ╚═══════════════════════════════════════════════════════════╝
-]]
+--// Bytecode Reader Class
+local BytecodeReader = {}
+BytecodeReader.__index = BytecodeReader
 
-local SmoothLib = {}
-SmoothLib.__index = SmoothLib
+function BytecodeReader.new(bytecode)
+    local self = setmetatable({}, BytecodeReader)
+    self.bytecode = bytecode
+    self.position = 1
+    self.length = #bytecode
+    return self
+end
 
--- Services
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
+function BytecodeReader:ReadByte()
+    if self.position > self.length then
+        return 0
+    end
+    local byte = string.byte(self.bytecode, self.position)
+    self.position = self.position + 1
+    return byte
+end
 
-local Player = Players.LocalPlayer
-local Mouse = Player:GetMouse()
+function BytecodeReader:ReadBytes(count)
+    local bytes = {}
+    for i = 1, count do
+        bytes[i] = self:ReadByte()
+    end
+    return bytes
+end
 
--- Config
-local Config = {
-    DefaultTheme = {
-        Primary = Color3.fromRGB(88, 101, 242),
-        Secondary = Color3.fromRGB(35, 35, 45),
-        Background = Color3.fromRGB(25, 25, 35),
-        Surface = Color3.fromRGB(40, 40, 55),
-        Text = Color3.fromRGB(255, 255, 255),
-        SubText = Color3.fromRGB(180, 180, 190),
-        Success = Color3.fromRGB(87, 242, 135),
-        Error = Color3.fromRGB(242, 87, 87),
-        Warning = Color3.fromRGB(242, 201, 87),
-        Accent = Color3.fromRGB(138, 87, 242)
-    },
-    TweenSpeed = 0.25,
-    Font = Enum.Font.GothamBold,
-    FontLight = Enum.Font.Gotham
+function BytecodeReader:ReadUInt32()
+    local b1 = self:ReadByte()
+    local b2 = self:ReadByte()
+    local b3 = self:ReadByte()
+    local b4 = self:ReadByte()
+    return b1 + (b2 * 0x100) + (b3 * 0x10000) + (b4 * 0x1000000)
+end
+
+function BytecodeReader:ReadInt32()
+    local value = self:ReadUInt32()
+    if value >= 0x80000000 then
+        value = value - 0x100000000
+    end
+    return value
+end
+
+function BytecodeReader:ReadFloat()
+    local b1, b2, b3, b4 = self:ReadByte(), self:ReadByte(), self:ReadByte(), self:ReadByte()
+    
+    local sign = (b4 >= 128) and -1 or 1
+    local exponent = ((b4 % 128) * 2) + math.floor(b3 / 128)
+    local mantissa = ((b3 % 128) * 0x10000) + (b2 * 0x100) + b1
+    
+    if exponent == 0 then
+        return sign * (2 ^ -126) * (mantissa / 0x800000)
+    elseif exponent == 255 then
+        return (mantissa == 0) and (sign * math.huge) or (0/0)
+    end
+    
+    return sign * (2 ^ (exponent - 127)) * (1 + mantissa / 0x800000)
+end
+
+function BytecodeReader:ReadDouble()
+    local bytes = self:ReadBytes(8)
+    
+    local sign = (bytes[8] >= 128) and -1 or 1
+    local exponent = ((bytes[8] % 128) * 16) + math.floor(bytes[7] / 16)
+    
+    local mantissa = (bytes[7] % 16)
+    for i = 6, 1, -1 do
+        mantissa = mantissa * 256 + bytes[i]
+    end
+    
+    if exponent == 0 then
+        return sign * (2 ^ -1022) * (mantissa / 0x10000000000000)
+    elseif exponent == 2047 then
+        return (mantissa == 0) and (sign * math.huge) or (0/0)
+    end
+    
+    return sign * (2 ^ (exponent - 1023)) * (1 + mantissa / 0x10000000000000)
+end
+
+-- Variable-length integer (Luau format)
+function BytecodeReader:ReadVarInt()
+    local result = 0
+    local shift = 0
+    
+    repeat
+        local byte = self:ReadByte()
+        result = result + bit32.lshift(bit32.band(byte, 0x7F), shift)
+        shift = shift + 7
+    until bit32.band(byte, 0x80) == 0
+    
+    return result
+end
+
+function BytecodeReader:ReadString()
+    local length = self:ReadVarInt()
+    if length == 0 then
+        return ""
+    end
+    
+    local str = string.sub(self.bytecode, self.position, self.position + length - 1)
+    self.position = self.position + length
+    return str
+end
+
+function BytecodeReader:IsEnd()
+    return self.position > self.length
+end
+
+--// Luau Opcode Definitions
+local LuauOpcode = {
+    NOP = 0,
+    BREAK = 1,
+    LOADNIL = 2,
+    LOADB = 3,
+    LOADN = 4,
+    LOADK = 5,
+    MOVE = 6,
+    GETGLOBAL = 7,
+    SETGLOBAL = 8,
+    GETUPVAL = 9,
+    SETUPVAL = 10,
+    CLOSEUPVALS = 11,
+    GETIMPORT = 12,
+    GETTABLE = 13,
+    SETTABLE = 14,
+    GETTABLEKS = 15,
+    SETTABLEKS = 16,
+    GETTABLEN = 17,
+    SETTABLEN = 18,
+    NEWCLOSURE = 19,
+    NAMECALL = 20,
+    CALL = 21,
+    RETURN = 22,
+    JUMP = 23,
+    JUMPBACK = 24,
+    JUMPIF = 25,
+    JUMPIFNOT = 26,
+    JUMPIFEQ = 27,
+    JUMPIFLE = 28,
+    JUMPIFLT = 29,
+    JUMPIFNOTEQ = 30,
+    JUMPIFNOTLE = 31,
+    JUMPIFNOTLT = 32,
+    ADD = 33,
+    SUB = 34,
+    MUL = 35,
+    DIV = 36,
+    MOD = 37,
+    POW = 38,
+    ADDK = 39,
+    SUBK = 40,
+    MULK = 41,
+    DIVK = 42,
+    MODK = 43,
+    POWK = 44,
+    AND = 45,
+    OR = 46,
+    ANDK = 47,
+    ORK = 48,
+    CONCAT = 49,
+    NOT = 50,
+    MINUS = 51,
+    LENGTH = 52,
+    NEWTABLE = 53,
+    DUPTABLE = 54,
+    SETLIST = 55,
+    FORNPREP = 56,
+    FORNLOOP = 57,
+    FORGLOOP = 58,
+    FORGPREP_INEXT = 59,
+    FORGLOOP_INEXT = 60,
+    FORGPREP_NEXT = 61,
+    FORGLOOP_NEXT = 62,
+    GETVARARGS = 63,
+    DUPCLOSURE = 64,
+    PREPVARARGS = 65,
+    LOADKX = 66,
+    JUMPX = 67,
+    FASTCALL = 68,
+    COVERAGE = 69,
+    CAPTURE = 70,
+    JUMPIFEQK = 71,
+    JUMPIFNOTEQK = 72,
+    FASTCALL1 = 73,
+    FASTCALL2 = 74,
+    FASTCALL2K = 75,
+    FORGPREP = 76,
+    JUMPXEQKNIL = 77,
+    JUMPXEQKB = 78,
+    JUMPXEQKN = 79,
+    JUMPXEQKS = 80,
+    IDIV = 81,
+    IDIVK = 82,
 }
 
--- Utilities
-local function Create(class, properties)
-    local instance = Instance.new(class)
-    for prop, value in pairs(properties) do
-        if prop ~= "Parent" then
-            instance[prop] = value
-        end
-    end
-    if properties.Parent then
-        instance.Parent = properties.Parent
-    end
-    return instance
+-- Opcode isimleri
+local OpcodeNames = {}
+for name, code in pairs(LuauOpcode) do
+    OpcodeNames[code] = name
 end
 
-local function Tween(obj, props, duration)
-    local tween = TweenService:Create(obj, TweenInfo.new(duration or Config.TweenSpeed, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props)
-    tween:Play()
-    return tween
+-- Opcode modları (A, B, C, D, E formatları)
+local OpcodeModes = {
+    [LuauOpcode.NOP] = "none",
+    [LuauOpcode.BREAK] = "none",
+    [LuauOpcode.LOADNIL] = "A",
+    [LuauOpcode.LOADB] = "ABC",
+    [LuauOpcode.LOADN] = "AD",
+    [LuauOpcode.LOADK] = "AD",
+    [LuauOpcode.MOVE] = "AB",
+    [LuauOpcode.GETGLOBAL] = "AC",
+    [LuauOpcode.SETGLOBAL] = "AC",
+    [LuauOpcode.GETUPVAL] = "AB",
+    [LuauOpcode.SETUPVAL] = "AB",
+    [LuauOpcode.GETTABLE] = "ABC",
+    [LuauOpcode.SETTABLE] = "ABC",
+    [LuauOpcode.GETTABLEKS] = "ABC",
+    [LuauOpcode.SETTABLEKS] = "ABC",
+    [LuauOpcode.NEWTABLE] = "AB",
+    [LuauOpcode.ADD] = "ABC",
+    [LuauOpcode.SUB] = "ABC",
+    [LuauOpcode.MUL] = "ABC",
+    [LuauOpcode.DIV] = "ABC",
+    [LuauOpcode.CALL] = "ABC",
+    [LuauOpcode.RETURN] = "AB",
+    [LuauOpcode.JUMP] = "D",
+    [LuauOpcode.JUMPIF] = "AD",
+    [LuauOpcode.JUMPIFNOT] = "AD",
+    [LuauOpcode.FORNPREP] = "AD",
+    [LuauOpcode.FORNLOOP] = "AD",
+    [LuauOpcode.FORGLOOP] = "AD",
+    [LuauOpcode.NEWCLOSURE] = "AD",
+}
+
+--// Instruction Decoder
+local InstructionDecoder = {}
+InstructionDecoder.__index = InstructionDecoder
+
+function InstructionDecoder.new()
+    local self = setmetatable({}, InstructionDecoder)
+    return self
 end
 
-local function AddCorner(parent, radius)
-    return Create("UICorner", {
-        CornerRadius = UDim.new(0, radius or 8),
-        Parent = parent
-    })
-end
-
-local function AddStroke(parent, color, thickness)
-    return Create("UIStroke", {
-        Color = color or Config.DefaultTheme.Primary,
-        Thickness = thickness or 1,
-        Transparency = 0.5,
-        Parent = parent
-    })
-end
-
-local function AddPadding(parent, padding)
-    return Create("UIPadding", {
-        PaddingTop = UDim.new(0, padding),
-        PaddingBottom = UDim.new(0, padding),
-        PaddingLeft = UDim.new(0, padding),
-        PaddingRight = UDim.new(0, padding),
-        Parent = parent
-    })
-end
-
-local function IsMobile()
-    return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-end
-
-local function Ripple(button, x, y)
-    local ripple = Create("Frame", {
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-        BackgroundTransparency = 0.7,
-        Position = UDim2.new(0, x - button.AbsolutePosition.X, 0, y - button.AbsolutePosition.Y),
-        Size = UDim2.new(0, 0, 0, 0),
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Parent = button
-    })
-    AddCorner(ripple, 100)
+function InstructionDecoder:Decode(instruction)
+    local opcode = bit32.band(instruction, 0xFF)
+    local A = bit32.band(bit32.rshift(instruction, 8), 0xFF)
+    local B = bit32.band(bit32.rshift(instruction, 16), 0xFF)
+    local C = bit32.band(bit32.rshift(instruction, 24), 0xFF)
     
-    local size = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 2
-    Tween(ripple, {Size = UDim2.new(0, size, 0, size), BackgroundTransparency = 1}, 0.5)
-    
-    task.delay(0.5, function()
-        ripple:Destroy()
-    end)
-end
-
--- Main Library
-function SmoothLib:CreateWindow(options)
-    options = options or {}
-    local Window = {}
-    Window.Theme = options.Theme or Config.DefaultTheme
-    Window.Tabs = {}
-    Window.CurrentTab = nil
-    Window.Minimized = false
-    Window.Mobile = IsMobile()
-    
-    -- Destroy existing
-    if game.CoreGui:FindFirstChild("SmoothLibrary") then
-        game.CoreGui:FindFirstChild("SmoothLibrary"):Destroy()
+    -- D format (signed 16-bit)
+    local D = bit32.band(bit32.rshift(instruction, 16), 0xFFFF)
+    if D >= 0x8000 then
+        D = D - 0x10000
     end
     
-    -- Main GUI
-    local ScreenGui = Create("ScreenGui", {
-        Name = "SmoothLibrary",
-        ResetOnSpawn = false,
-        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-        Parent = (syn and syn.protect_gui and syn.protect_gui(Instance.new("ScreenGui"))) or game.CoreGui
-    })
-    
-    if syn and syn.protect_gui then
-        syn.protect_gui(ScreenGui)
-        ScreenGui.Parent = game.CoreGui
+    -- E format (signed 24-bit)
+    local E = bit32.band(bit32.rshift(instruction, 8), 0xFFFFFF)
+    if E >= 0x800000 then
+        E = E - 0x1000000
     end
     
-    -- Main Frame
-    local MainSize = Window.Mobile and UDim2.new(0.95, 0, 0.7, 0) or UDim2.new(0, 550, 0, 380)
-    local MainFrame = Create("Frame", {
-        Name = "MainFrame",
-        BackgroundColor3 = Window.Theme.Background,
-        Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = MainSize,
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Parent = ScreenGui
-    })
-    AddCorner(MainFrame, 12)
-    AddStroke(MainFrame, Window.Theme.Primary, 2)
+    return {
+        raw = instruction,
+        opcode = opcode,
+        opname = OpcodeNames[opcode] or "UNKNOWN_" .. opcode,
+        A = A,
+        B = B,
+        C = C,
+        D = D,
+        E = E,
+        Bx = B + C * 256,
+        sBx = (B + C * 256) - 32767
+    }
+end
+
+--// Proto Parser - Fonksiyon yapısını parse eder
+local ProtoParser = {}
+ProtoParser.__index = ProtoParser
+
+function ProtoParser.new(reader)
+    local self = setmetatable({}, ProtoParser)
+    self.reader = reader
+    return self
+end
+
+function ProtoParser:Parse()
+    local proto = {}
     
-    -- Shadow
-    local Shadow = Create("ImageLabel", {
-        Name = "Shadow",
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0.5, 0, 0.5, 4),
-        Size = UDim2.new(1, 30, 1, 30),
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Image = "rbxassetid://5554236805",
-        ImageColor3 = Color3.fromRGB(0, 0, 0),
-        ImageTransparency = 0.5,
-        ScaleType = Enum.ScaleType.Slice,
-        SliceCenter = Rect.new(23, 23, 277, 277),
-        ZIndex = -1,
-        Parent = MainFrame
-    })
+    -- Max stack size
+    proto.maxStackSize = self.reader:ReadByte()
     
-    -- Title Bar
-    local TitleBar = Create("Frame", {
-        Name = "TitleBar",
-        BackgroundColor3 = Window.Theme.Secondary,
-        Size = UDim2.new(1, 0, 0, 45),
-        Parent = MainFrame
-    })
-    AddCorner(TitleBar, 12)
+    -- Parametre sayısı
+    proto.numParams = self.reader:ReadByte()
     
-    local TitleFix = Create("Frame", {
-        BackgroundColor3 = Window.Theme.Secondary,
-        Position = UDim2.new(0, 0, 1, -12),
-        Size = UDim2.new(1, 0, 0, 12),
-        BorderSizePixel = 0,
-        Parent = TitleBar
-    })
+    -- Upvalue sayısı
+    proto.numUpvalues = self.reader:ReadByte()
     
-    -- Logo
-    local Logo = Create("Frame", {
-        Name = "Logo",
-        BackgroundColor3 = Window.Theme.Primary,
-        Position = UDim2.new(0, 12, 0.5, 0),
-        Size = UDim2.new(0, 28, 0, 28),
-        AnchorPoint = Vector2.new(0, 0.5),
-        Parent = TitleBar
-    })
-    AddCorner(Logo, 6)
+    -- Is vararg
+    proto.isVararg = self.reader:ReadByte() ~= 0
     
-    local LogoIcon = Create("TextLabel", {
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 1, 0),
-        Font = Config.Font,
-        Text = "⚡",
-        TextColor3 = Color3.fromRGB(255, 255, 255),
-        TextSize = 16,
-        Parent = Logo
-    })
+    -- Flags (Luau 3+)
+    proto.flags = self.reader:ReadByte()
     
-    -- Title
-    local Title = Create("TextLabel", {
-        Name = "Title",
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, 50, 0.5, 0),
-        Size = UDim2.new(0.5, 0, 0, 20),
-        AnchorPoint = Vector2.new(0, 0.5),
-        Font = Config.Font,
-        Text = options.Title or "Smooth Library",
-        TextColor3 = Window.Theme.Text,
-        TextSize = 16,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = TitleBar
-    })
+    -- Typeinfo size
+    local typeinfoSize = self.reader:ReadVarInt()
+    if typeinfoSize > 0 then
+        proto.typeinfo = self.reader:ReadBytes(typeinfoSize)
+    end
     
-    -- Buttons Container
-    local ButtonsContainer = Create("Frame", {
-        BackgroundTransparency = 1,
-        Position = UDim2.new(1, -12, 0.5, 0),
-        Size = UDim2.new(0, 70, 0, 28),
-        AnchorPoint = Vector2.new(1, 0.5),
-        Parent = TitleBar
-    })
+    -- Instructions
+    local instrCount = self.reader:ReadVarInt()
+    proto.instructions = {}
     
-    local ButtonsLayout = Create("UIListLayout", {
-        FillDirection = Enum.FillDirection.Horizontal,
-        HorizontalAlignment = Enum.HorizontalAlignment.Right,
-        Padding = UDim.new(0, 8),
-        Parent = ButtonsContainer
-    })
+    local decoder = InstructionDecoder.new()
+    for i = 1, instrCount do
+        local raw = self.reader:ReadUInt32()
+        proto.instructions[i] = decoder:Decode(raw)
+    end
     
-    -- Close Button
-    local CloseBtn = Create("TextButton", {
-        Name = "Close",
-        BackgroundColor3 = Window.Theme.Error,
-        Size = UDim2.new(0, 28, 0, 28),
-        Font = Config.Font,
-        Text = "×",
-        TextColor3 = Color3.fromRGB(255, 255, 255),
-        TextSize = 20,
-        Parent = ButtonsContainer
-    })
-    AddCorner(CloseBtn, 6)
+    -- Constants
+    local constCount = self.reader:ReadVarInt()
+    proto.constants = {}
     
-    CloseBtn.MouseButton1Click:Connect(function()
-        Tween(MainFrame, {Size = UDim2.new(0, 0, 0, 0)}, 0.3)
-        task.wait(0.3)
-        ScreenGui:Destroy()
-    end)
-    
-    CloseBtn.MouseEnter:Connect(function()
-        Tween(CloseBtn, {BackgroundColor3 = Color3.fromRGB(255, 100, 100)})
-    end)
-    
-    CloseBtn.MouseLeave:Connect(function()
-        Tween(CloseBtn, {BackgroundColor3 = Window.Theme.Error})
-    end)
-    
-    -- Minimize Button
-    local MinBtn = Create("TextButton", {
-        Name = "Minimize",
-        BackgroundColor3 = Window.Theme.Warning,
-        Size = UDim2.new(0, 28, 0, 28),
-        Font = Config.Font,
-        Text = "−",
-        TextColor3 = Color3.fromRGB(255, 255, 255),
-        TextSize = 20,
-        Parent = ButtonsContainer
-    })
-    AddCorner(MinBtn, 6)
-    
-    MinBtn.MouseButton1Click:Connect(function()
-        Window.Minimized = not Window.Minimized
-        if Window.Minimized then
-            Tween(MainFrame, {Size = UDim2.new(MainSize.X.Scale, MainSize.X.Offset, 0, 45)})
+    for i = 1, constCount do
+        local constType = self.reader:ReadByte()
+        
+        if constType == 0 then -- Nil
+            proto.constants[i] = {type = "nil", value = nil}
+        elseif constType == 1 then -- Boolean
+            proto.constants[i] = {type = "boolean", value = self.reader:ReadByte() ~= 0}
+        elseif constType == 2 then -- Number
+            proto.constants[i] = {type = "number", value = self.reader:ReadDouble()}
+        elseif constType == 3 then -- String
+            proto.constants[i] = {type = "string", value = self.reader:ReadString()}
+        elseif constType == 4 then -- Import
+            proto.constants[i] = {type = "import", value = self.reader:ReadUInt32()}
+        elseif constType == 5 then -- Table
+            local tableSize = self.reader:ReadVarInt()
+            local keys = {}
+            for j = 1, tableSize do
+                keys[j] = self.reader:ReadVarInt()
+            end
+            proto.constants[i] = {type = "table", value = keys}
+        elseif constType == 6 then -- Closure
+            proto.constants[i] = {type = "closure", value = self.reader:ReadVarInt()}
         else
-            Tween(MainFrame, {Size = MainSize})
+            proto.constants[i] = {type = "unknown", value = constType}
         end
-    end)
+    end
     
-    -- Tab Container
-    local TabContainer = Create("Frame", {
-        Name = "TabContainer",
-        BackgroundColor3 = Window.Theme.Secondary,
-        Position = UDim2.new(0, 0, 0, 45),
-        Size = UDim2.new(0, Window.Mobile and 50 or 140, 1, -45),
-        Parent = MainFrame
-    })
-    AddCorner(TabContainer, 12)
+    -- Child protos
+    local protoCount = self.reader:ReadVarInt()
+    proto.childProtos = {}
+    for i = 1, protoCount do
+        proto.childProtos[i] = self.reader:ReadVarInt()
+    end
     
-    local TabFix1 = Create("Frame", {
-        BackgroundColor3 = Window.Theme.Secondary,
-        Position = UDim2.new(1, -12, 0, 0),
-        Size = UDim2.new(0, 12, 1, 0),
-        BorderSizePixel = 0,
-        Parent = TabContainer
-    })
+    -- Line info
+    proto.lineDefined = self.reader:ReadVarInt()
     
-    local TabFix2 = Create("Frame", {
-        BackgroundColor3 = Window.Theme.Secondary,
-        Position = UDim2.new(0, 0, 0, 0),
-        Size = UDim2.new(1, 0, 0, 12),
-        BorderSizePixel = 0,
-        Parent = TabContainer
-    })
+    -- Debug name
+    local debugNameIdx = self.reader:ReadVarInt()
+    proto.debugName = debugNameIdx
     
-    local TabScroll = Create("ScrollingFrame", {
-        Name = "TabScroll",
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, 0, 0, 10),
-        Size = UDim2.new(1, 0, 1, -20),
-        ScrollBarThickness = 0,
-        ScrollingDirection = Enum.ScrollingDirection.Y,
-        Parent = TabContainer
-    })
+    -- Line info (optional)
+    local hasLineInfo = self.reader:ReadByte() ~= 0
+    if hasLineInfo then
+        local lineGapLog2 = self.reader:ReadByte()
+        
+        local intervals = bit32.rshift(instrCount - 1, lineGapLog2) + 1
+        
+        for i = 1, instrCount do
+            self.reader:ReadByte() -- lineinfo
+        end
+        
+        for i = 1, intervals do
+            self.reader:ReadInt32() -- abslineinfo
+        end
+    end
     
-    local TabLayout = Create("UIListLayout", {
-        Padding = UDim.new(0, 5),
-        HorizontalAlignment = Enum.HorizontalAlignment.Center,
-        Parent = TabScroll
-    })
-    AddPadding(TabScroll, 5)
-    
-    -- Content Container
-    local ContentContainer = Create("Frame", {
-        Name = "ContentContainer",
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, Window.Mobile and 55 or 145, 0, 50),
-        Size = UDim2.new(1, Window.Mobile and -60 or -150, 1, -55),
-        ClipsDescendants = true,
-        Parent = MainFrame
-    })
-    
-    -- Dragging
-    local Dragging, DragInput, DragStart, StartPos
-    
-    TitleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            Dragging = true
-            DragStart = input.Position
-            StartPos = MainFrame.Position
-            
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    Dragging = false
-                end
-            end)
-        end
-    end)
-    
-    TitleBar.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            DragInput = input
-        end
-    end)
-    
-    UserInputService.InputChanged:Connect(function(input)
-        if input == DragInput and Dragging then
-            local Delta = input.Position - DragStart
-            Tween(MainFrame, {Position = UDim2.new(StartPos.X.Scale, StartPos.X.Offset + Delta.X, StartPos.Y.Scale, StartPos.Y.Offset + Delta.Y)}, 0.1)
-        end
-    end)
-    
-    -- Open Animation
-    MainFrame.Size = UDim2.new(0, 0, 0, 0)
-    Tween(MainFrame, {Size = MainSize}, 0.4)
-    
-    -- Create Tab Function
-    function Window:CreateTab(options)
-        options = options or {}
-        local Tab = {}
-        Tab.Elements = {}
+    -- Debug info (optional)
+    local hasDebugInfo = self.reader:ReadByte() ~= 0
+    if hasDebugInfo then
+        local localCount = self.reader:ReadVarInt()
+        proto.locals = {}
         
-        local TabBtn = Create("TextButton", {
-            Name = options.Name or "Tab",
-            BackgroundColor3 = Window.Theme.Surface,
-            BackgroundTransparency = 0.5,
-            Size = UDim2.new(1, -10, 0, Window.Mobile and 40 or 35),
-            Font = Config.Font,
-            Text = Window.Mobile and (options.Icon or "📁") or (options.Icon or "📁") .. " " .. (options.Name or "Tab"),
-            TextColor3 = Window.Theme.SubText,
-            TextSize = Window.Mobile and 18 or 13,
-            Parent = TabScroll
-        })
-        AddCorner(TabBtn, 8)
-        
-        local TabContent = Create("ScrollingFrame", {
-            Name = options.Name or "Tab",
-            BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 1, 0),
-            ScrollBarThickness = 3,
-            ScrollBarImageColor3 = Window.Theme.Primary,
-            Visible = false,
-            CanvasSize = UDim2.new(0, 0, 0, 0),
-            Parent = ContentContainer
-        })
-        
-        local ContentLayout = Create("UIListLayout", {
-            Padding = UDim.new(0, 8),
-            Parent = TabContent
-        })
-        AddPadding(TabContent, 5)
-        
-        ContentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-            TabContent.CanvasSize = UDim2.new(0, 0, 0, ContentLayout.AbsoluteContentSize.Y + 20)
-        end)
-        
-        TabBtn.MouseButton1Click:Connect(function()
-            for _, tab in pairs(Window.Tabs) do
-                tab.Button.BackgroundTransparency = 0.5
-                tab.Button.TextColor3 = Window.Theme.SubText
-                tab.Content.Visible = false
-            end
-            
-            TabBtn.BackgroundTransparency = 0
-            TabBtn.TextColor3 = Window.Theme.Text
-            TabContent.Visible = true
-            Window.CurrentTab = Tab
-            
-            Tween(TabBtn, {BackgroundColor3 = Window.Theme.Primary}, 0.2)
-        end)
-        
-        TabBtn.MouseEnter:Connect(function()
-            if Window.CurrentTab ~= Tab then
-                Tween(TabBtn, {BackgroundTransparency = 0.3})
-            end
-        end)
-        
-        TabBtn.MouseLeave:Connect(function()
-            if Window.CurrentTab ~= Tab then
-                Tween(TabBtn, {BackgroundTransparency = 0.5})
-            end
-        end)
-        
-        Tab.Button = TabBtn
-        Tab.Content = TabContent
-        table.insert(Window.Tabs, Tab)
-        
-        -- Auto select first tab
-        if #Window.Tabs == 1 then
-            TabBtn.BackgroundTransparency = 0
-            TabBtn.TextColor3 = Window.Theme.Text
-            TabBtn.BackgroundColor3 = Window.Theme.Primary
-            TabContent.Visible = true
-            Window.CurrentTab = Tab
-        end
-        
-        -- Section
-        function Tab:CreateSection(name)
-            local Section = Create("Frame", {
-                BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 0, 25),
-                Parent = TabContent
-            })
-            
-            local SectionTitle = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 1, 0),
-                Font = Config.Font,
-                Text = "  " .. (name or "Section"),
-                TextColor3 = Window.Theme.SubText,
-                TextSize = 12,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Section
-            })
-            
-            local Line = Create("Frame", {
-                BackgroundColor3 = Window.Theme.Surface,
-                Position = UDim2.new(0, 0, 1, -1),
-                Size = UDim2.new(1, 0, 0, 1),
-                Parent = Section
-            })
-        end
-        
-        -- Button
-        function Tab:CreateButton(options)
-            options = options or {}
-            
-            local Button = Create("TextButton", {
-                Name = "Button",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 38),
-                Font = Config.FontLight,
-                Text = "",
-                Parent = TabContent
-            })
-            AddCorner(Button, 8)
-            
-            local ButtonText = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 0),
-                Size = UDim2.new(1, -24, 1, 0),
-                Font = Config.FontLight,
-                Text = options.Name or "Button",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Button
-            })
-            
-            local ButtonIcon = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(1, -30, 0.5, 0),
-                Size = UDim2.new(0, 20, 0, 20),
-                AnchorPoint = Vector2.new(0, 0.5),
-                Font = Config.Font,
-                Text = "→",
-                TextColor3 = Window.Theme.Primary,
-                TextSize = 16,
-                Parent = Button
-            })
-            
-            Button.ClipsDescendants = true
-            
-            Button.MouseButton1Click:Connect(function()
-                Ripple(Button, Mouse.X, Mouse.Y)
-                if options.Callback then
-                    options.Callback()
-                end
-            end)
-            
-            Button.MouseEnter:Connect(function()
-                Tween(Button, {BackgroundColor3 = Window.Theme.Primary})
-            end)
-            
-            Button.MouseLeave:Connect(function()
-                Tween(Button, {BackgroundColor3 = Window.Theme.Surface})
-            end)
-            
-            return Button
-        end
-        
-        -- Toggle
-        function Tab:CreateToggle(options)
-            options = options or {}
-            local Toggled = options.Default or false
-            
-            local Toggle = Create("Frame", {
-                Name = "Toggle",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 38),
-                Parent = TabContent
-            })
-            AddCorner(Toggle, 8)
-            
-            local ToggleText = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 0),
-                Size = UDim2.new(1, -70, 1, 0),
-                Font = Config.FontLight,
-                Text = options.Name or "Toggle",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Toggle
-            })
-            
-            local ToggleBtn = Create("Frame", {
-                BackgroundColor3 = Toggled and Window.Theme.Primary or Window.Theme.Secondary,
-                Position = UDim2.new(1, -52, 0.5, 0),
-                Size = UDim2.new(0, 44, 0, 24),
-                AnchorPoint = Vector2.new(0, 0.5),
-                Parent = Toggle
-            })
-            AddCorner(ToggleBtn, 12)
-            
-            local ToggleCircle = Create("Frame", {
-                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-                Position = Toggled and UDim2.new(1, -22, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
-                Size = UDim2.new(0, 20, 0, 20),
-                AnchorPoint = Vector2.new(0, 0.5),
-                Parent = ToggleBtn
-            })
-            AddCorner(ToggleCircle, 10)
-            
-            local ToggleButton = Create("TextButton", {
-                BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 1, 0),
-                Text = "",
-                Parent = Toggle
-            })
-            
-            local function UpdateToggle()
-                Tween(ToggleBtn, {BackgroundColor3 = Toggled and Window.Theme.Primary or Window.Theme.Secondary})
-                Tween(ToggleCircle, {Position = Toggled and UDim2.new(1, -22, 0.5, 0) or UDim2.new(0, 2, 0.5, 0)})
-            end
-            
-            ToggleButton.MouseButton1Click:Connect(function()
-                Toggled = not Toggled
-                UpdateToggle()
-                if options.Callback then
-                    options.Callback(Toggled)
-                end
-            end)
-            
-            local ToggleAPI = {}
-            function ToggleAPI:Set(value)
-                Toggled = value
-                UpdateToggle()
-                if options.Callback then
-                    options.Callback(Toggled)
-                end
-            end
-            
-            function ToggleAPI:Get()
-                return Toggled
-            end
-            
-            return ToggleAPI
-        end
-        
-        -- Slider
-        function Tab:CreateSlider(options)
-            options = options or {}
-            local Min = options.Min or 0
-            local Max = options.Max or 100
-            local Value = options.Default or Min
-            
-            local Slider = Create("Frame", {
-                Name = "Slider",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 55),
-                Parent = TabContent
-            })
-            AddCorner(Slider, 8)
-            
-            local SliderText = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 5),
-                Size = UDim2.new(0.5, 0, 0, 20),
-                Font = Config.FontLight,
-                Text = options.Name or "Slider",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Slider
-            })
-            
-            local SliderValue = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(1, -12, 0, 5),
-                Size = UDim2.new(0.3, 0, 0, 20),
-                AnchorPoint = Vector2.new(1, 0),
-                Font = Config.Font,
-                Text = tostring(Value),
-                TextColor3 = Window.Theme.Primary,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Right,
-                Parent = Slider
-            })
-            
-            local SliderBar = Create("Frame", {
-                BackgroundColor3 = Window.Theme.Secondary,
-                Position = UDim2.new(0.5, 0, 0, 35),
-                Size = UDim2.new(1, -24, 0, 8),
-                AnchorPoint = Vector2.new(0.5, 0),
-                Parent = Slider
-            })
-            AddCorner(SliderBar, 4)
-            
-            local SliderFill = Create("Frame", {
-                BackgroundColor3 = Window.Theme.Primary,
-                Size = UDim2.new((Value - Min) / (Max - Min), 0, 1, 0),
-                Parent = SliderBar
-            })
-            AddCorner(SliderFill, 4)
-            
-            local SliderCircle = Create("Frame", {
-                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-                Position = UDim2.new((Value - Min) / (Max - Min), 0, 0.5, 0),
-                Size = UDim2.new(0, 16, 0, 16),
-                AnchorPoint = Vector2.new(0.5, 0.5),
-                ZIndex = 2,
-                Parent = SliderBar
-            })
-            AddCorner(SliderCircle, 8)
-            
-            local SliderButton = Create("TextButton", {
-                BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 1, 0),
-                Text = "",
-                Parent = SliderBar
-            })
-            
-            local Sliding = false
-            
-            local function UpdateSlider(input)
-                local Pos = math.clamp((input.Position.X - SliderBar.AbsolutePosition.X) / SliderBar.AbsoluteSize.X, 0, 1)
-                Value = math.floor(Min + (Max - Min) * Pos)
-                SliderValue.Text = tostring(Value)
-                Tween(SliderFill, {Size = UDim2.new(Pos, 0, 1, 0)}, 0.1)
-                Tween(SliderCircle, {Position = UDim2.new(Pos, 0, 0.5, 0)}, 0.1)
-                if options.Callback then
-                    options.Callback(Value)
-                end
-            end
-            
-            SliderButton.InputBegan:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                    Sliding = true
-                    UpdateSlider(input)
-                end
-            end)
-            
-            SliderButton.InputEnded:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                    Sliding = false
-                end
-            end)
-            
-            UserInputService.InputChanged:Connect(function(input)
-                if Sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-                    UpdateSlider(input)
-                end
-            end)
-            
-            local SliderAPI = {}
-            function SliderAPI:Set(value)
-                Value = math.clamp(value, Min, Max)
-                local Pos = (Value - Min) / (Max - Min)
-                SliderValue.Text = tostring(Value)
-                Tween(SliderFill, {Size = UDim2.new(Pos, 0, 1, 0)}, 0.1)
-                Tween(SliderCircle, {Position = UDim2.new(Pos, 0, 0.5, 0)}, 0.1)
-                if options.Callback then
-                    options.Callback(Value)
-                end
-            end
-            
-            function SliderAPI:Get()
-                return Value
-            end
-            
-            return SliderAPI
-        end
-        
-        -- Dropdown
-        function Tab:CreateDropdown(options)
-            options = options or {}
-            local Items = options.Items or {}
-            local Selected = options.Default or Items[1] or ""
-            local Opened = false
-            
-            local Dropdown = Create("Frame", {
-                Name = "Dropdown",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 38),
-                ClipsDescendants = true,
-                Parent = TabContent
-            })
-            AddCorner(Dropdown, 8)
-            
-            local DropdownText = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 0),
-                Size = UDim2.new(1, -50, 0, 38),
-                Font = Config.FontLight,
-                Text = options.Name or "Dropdown",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Dropdown
-            })
-            
-            local DropdownSelected = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 25),
-                Size = UDim2.new(1, -50, 0, 15),
-                Font = Config.FontLight,
-                Text = Selected,
-                TextColor3 = Window.Theme.SubText,
-                TextSize = 11,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Dropdown
-            })
-            
-            local DropdownArrow = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(1, -30, 0, 9),
-                Size = UDim2.new(0, 20, 0, 20),
-                Font = Config.Font,
-                Text = "▼",
-                TextColor3 = Window.Theme.Primary,
-                TextSize = 12,
-                Parent = Dropdown
-            })
-            
-            local DropdownBtn = Create("TextButton", {
-                BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 0, 38),
-                Text = "",
-                Parent = Dropdown
-            })
-            
-            local DropdownContent = Create("Frame", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 0, 0, 43),
-                Size = UDim2.new(1, 0, 0, #Items * 30),
-                Parent = Dropdown
-            })
-            
-            local DropdownLayout = Create("UIListLayout", {
-                Padding = UDim.new(0, 2),
-                Parent = DropdownContent
-            })
-            AddPadding(DropdownContent, 2)
-            
-            for _, item in ipairs(Items) do
-                local ItemBtn = Create("TextButton", {
-                    BackgroundColor3 = Window.Theme.Secondary,
-                    BackgroundTransparency = 0.5,
-                    Size = UDim2.new(1, -4, 0, 28),
-                    Font = Config.FontLight,
-                    Text = "  " .. item,
-                    TextColor3 = Window.Theme.Text,
-                    TextSize = 13,
-                    TextXAlignment = Enum.TextXAlignment.Left,
-                    Parent = DropdownContent
-                })
-                AddCorner(ItemBtn, 6)
-                
-                ItemBtn.MouseButton1Click:Connect(function()
-                    Selected = item
-                    DropdownSelected.Text = Selected
-                    Opened = false
-                    Tween(Dropdown, {Size = UDim2.new(1, 0, 0, 38)})
-                    Tween(DropdownArrow, {Rotation = 0})
-                    if options.Callback then
-                        options.Callback(Selected)
-                    end
-                end)
-                
-                ItemBtn.MouseEnter:Connect(function()
-                    Tween(ItemBtn, {BackgroundTransparency = 0})
-                end)
-                
-                ItemBtn.MouseLeave:Connect(function()
-                    Tween(ItemBtn, {BackgroundTransparency = 0.5})
-                end)
-            end
-            
-            DropdownBtn.MouseButton1Click:Connect(function()
-                Opened = not Opened
-                local Height = Opened and (43 + #Items * 30 + 10) or 38
-                Tween(Dropdown, {Size = UDim2.new(1, 0, 0, Height)})
-                Tween(DropdownArrow, {Rotation = Opened and 180 or 0})
-            end)
-            
-            local DropdownAPI = {}
-            function DropdownAPI:Set(value)
-                if table.find(Items, value) then
-                    Selected = value
-                    DropdownSelected.Text = Selected
-                    if options.Callback then
-                        options.Callback(Selected)
-                    end
-                end
-            end
-            
-            function DropdownAPI:Get()
-                return Selected
-            end
-            
-            function DropdownAPI:Refresh(newItems)
-                Items = newItems
-                for _, child in ipairs(DropdownContent:GetChildren()) do
-                    if child:IsA("TextButton") then
-                        child:Destroy()
-                    end
-                end
-                for _, item in ipairs(Items) do
-                    local ItemBtn = Create("TextButton", {
-                        BackgroundColor3 = Window.Theme.Secondary,
-                        BackgroundTransparency = 0.5,
-                        Size = UDim2.new(1, -4, 0, 28),
-                        Font = Config.FontLight,
-                        Text = "  " .. item,
-                        TextColor3 = Window.Theme.Text,
-                        TextSize = 13,
-                        TextXAlignment = Enum.TextXAlignment.Left,
-                        Parent = DropdownContent
-                    })
-                    AddCorner(ItemBtn, 6)
-                    
-                    ItemBtn.MouseButton1Click:Connect(function()
-                        Selected = item
-                        DropdownSelected.Text = Selected
-                        Opened = false
-                        Tween(Dropdown, {Size = UDim2.new(1, 0, 0, 38)})
-                        Tween(DropdownArrow, {Rotation = 0})
-                        if options.Callback then
-                            options.Callback(Selected)
-                        end
-                    end)
-                end
-            end
-            
-            return DropdownAPI
-        end
-        
-        -- Textbox
-        function Tab:CreateTextbox(options)
-            options = options or {}
-            
-            local Textbox = Create("Frame", {
-                Name = "Textbox",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 38),
-                Parent = TabContent
-            })
-            AddCorner(Textbox, 8)
-            
-            local TextboxLabel = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 0),
-                Size = UDim2.new(0.4, 0, 1, 0),
-                Font = Config.FontLight,
-                Text = options.Name or "Textbox",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Textbox
-            })
-            
-            local TextboxInput = Create("TextBox", {
-                BackgroundColor3 = Window.Theme.Secondary,
-                Position = UDim2.new(1, -12, 0.5, 0),
-                Size = UDim2.new(0.5, -12, 0, 28),
-                AnchorPoint = Vector2.new(1, 0.5),
-                Font = Config.FontLight,
-                Text = options.Default or "",
-                PlaceholderText = options.Placeholder or "Enter text...",
-                PlaceholderColor3 = Window.Theme.SubText,
-                TextColor3 = Window.Theme.Text,
-                TextSize = 13,
-                ClearTextOnFocus = false,
-                Parent = Textbox
-            })
-            AddCorner(TextboxInput, 6)
-            
-            TextboxInput.Focused:Connect(function()
-                Tween(TextboxInput, {BackgroundColor3 = Window.Theme.Primary})
-            end)
-            
-            TextboxInput.FocusLost:Connect(function(enterPressed)
-                Tween(TextboxInput, {BackgroundColor3 = Window.Theme.Secondary})
-                if options.Callback then
-                    options.Callback(TextboxInput.Text, enterPressed)
-                end
-            end)
-            
-            local TextboxAPI = {}
-            function TextboxAPI:Set(value)
-                TextboxInput.Text = value
-            end
-            
-            function TextboxAPI:Get()
-                return TextboxInput.Text
-            end
-            
-            return TextboxAPI
-        end
-        
-        -- Keybind
-        function Tab:CreateKeybind(options)
-            options = options or {}
-            local Key = options.Default or Enum.KeyCode.Unknown
-            local Listening = false
-            
-            local Keybind = Create("Frame", {
-                Name = "Keybind",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 38),
-                Parent = TabContent
-            })
-            AddCorner(Keybind, 8)
-            
-            local KeybindText = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 0),
-                Size = UDim2.new(0.6, 0, 1, 0),
-                Font = Config.FontLight,
-                Text = options.Name or "Keybind",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Keybind
-            })
-            
-            local KeybindBtn = Create("TextButton", {
-                BackgroundColor3 = Window.Theme.Secondary,
-                Position = UDim2.new(1, -12, 0.5, 0),
-                Size = UDim2.new(0, 80, 0, 28),
-                AnchorPoint = Vector2.new(1, 0.5),
-                Font = Config.Font,
-                Text = Key.Name or "None",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 12,
-                Parent = Keybind
-            })
-            AddCorner(KeybindBtn, 6)
-            
-            KeybindBtn.MouseButton1Click:Connect(function()
-                Listening = true
-                KeybindBtn.Text = "..."
-                Tween(KeybindBtn, {BackgroundColor3 = Window.Theme.Primary})
-            end)
-            
-            UserInputService.InputBegan:Connect(function(input, gameProcessed)
-                if Listening then
-                    if input.UserInputType == Enum.UserInputType.Keyboard then
-                        Key = input.KeyCode
-                        KeybindBtn.Text = Key.Name
-                        Listening = false
-                        Tween(KeybindBtn, {BackgroundColor3 = Window.Theme.Secondary})
-                        if options.Callback then
-                            options.Callback(Key)
-                        end
-                    end
-                elseif input.KeyCode == Key and not gameProcessed then
-                    if options.OnPress then
-                        options.OnPress()
-                    end
-                end
-            end)
-            
-            local KeybindAPI = {}
-            function KeybindAPI:Set(key)
-                Key = key
-                KeybindBtn.Text = Key.Name
-            end
-            
-            function KeybindAPI:Get()
-                return Key
-            end
-            
-            return KeybindAPI
-        end
-        
-        -- Label
-        function Tab:CreateLabel(text)
-            local Label = Create("TextLabel", {
-                Name = "Label",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 30),
-                Font = Config.FontLight,
-                Text = "  " .. (text or "Label"),
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = TabContent
-            })
-            AddCorner(Label, 8)
-            
-            local LabelAPI = {}
-            function LabelAPI:Set(newText)
-                Label.Text = "  " .. newText
-            end
-            
-            return LabelAPI
-        end
-        
-        -- Paragraph
-        function Tab:CreateParagraph(options)
-            options = options or {}
-            
-            local Paragraph = Create("Frame", {
-                Name = "Paragraph",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 60),
-                Parent = TabContent
-            })
-            AddCorner(Paragraph, 8)
-            
-            local ParagraphTitle = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 8),
-                Size = UDim2.new(1, -24, 0, 18),
-                Font = Config.Font,
-                Text = options.Title or "Title",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Paragraph
-            })
-            
-            local ParagraphContent = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 28),
-                Size = UDim2.new(1, -24, 0, 28),
-                Font = Config.FontLight,
-                Text = options.Content or "Content",
-                TextColor3 = Window.Theme.SubText,
-                TextSize = 12,
-                TextWrapped = true,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                TextYAlignment = Enum.TextYAlignment.Top,
-                Parent = Paragraph
-            })
-            
-            local ParagraphAPI = {}
-            function ParagraphAPI:Set(title, content)
-                ParagraphTitle.Text = title or ParagraphTitle.Text
-                ParagraphContent.Text = content or ParagraphContent.Text
-            end
-            
-            return ParagraphAPI
-        end
-        
-        -- Color Picker
-        function Tab:CreateColorPicker(options)
-            options = options or {}
-            local Color = options.Default or Color3.fromRGB(255, 255, 255)
-            local Opened = false
-            
-            local ColorPicker = Create("Frame", {
-                Name = "ColorPicker",
-                BackgroundColor3 = Window.Theme.Surface,
-                Size = UDim2.new(1, 0, 0, 38),
-                ClipsDescendants = true,
-                Parent = TabContent
-            })
-            AddCorner(ColorPicker, 8)
-            
-            local ColorText = Create("TextLabel", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 0),
-                Size = UDim2.new(1, -70, 0, 38),
-                Font = Config.FontLight,
-                Text = options.Name or "Color Picker",
-                TextColor3 = Window.Theme.Text,
-                TextSize = 14,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = ColorPicker
-            })
-            
-            local ColorDisplay = Create("Frame", {
-                BackgroundColor3 = Color,
-                Position = UDim2.new(1, -52, 0.5, 0),
-                Size = UDim2.new(0, 40, 0, 24),
-                AnchorPoint = Vector2.new(0, 0.5),
-                Parent = ColorPicker
-            })
-            AddCorner(ColorDisplay, 6)
-            AddStroke(ColorDisplay, Window.Theme.Secondary, 2)
-            
-            local ColorBtn = Create("TextButton", {
-                BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 0, 38),
-                Text = "",
-                Parent = ColorPicker
-            })
-            
-            -- Color picker palette (simplified)
-            local ColorPalette = Create("Frame", {
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, 8, 0, 45),
-                Size = UDim2.new(1, -16, 0, 100),
-                Parent = ColorPicker
-            })
-            
-            local Colors = {
-                Color3.fromRGB(255, 0, 0),
-                Color3.fromRGB(255, 127, 0),
-                Color3.fromRGB(255, 255, 0),
-                Color3.fromRGB(0, 255, 0),
-                Color3.fromRGB(0, 255, 255),
-                Color3.fromRGB(0, 0, 255),
-                Color3.fromRGB(127, 0, 255),
-                Color3.fromRGB(255, 0, 255),
-                Color3.fromRGB(255, 255, 255),
-                Color3.fromRGB(128, 128, 128),
-                Color3.fromRGB(0, 0, 0)
+        for i = 1, localCount do
+            proto.locals[i] = {
+                name = self.reader:ReadVarInt(),
+                startPc = self.reader:ReadVarInt(),
+                endPc = self.reader:ReadVarInt(),
+                reg = self.reader:ReadByte()
             }
-            
-            local ColorGrid = Create("UIGridLayout", {
-                CellSize = UDim2.new(0, 30, 0, 30),
-                CellPadding = UDim2.new(0, 5, 0, 5),
-                Parent = ColorPalette
-            })
-            
-            for _, color in ipairs(Colors) do
-                local ColorOption = Create("TextButton", {
-                    BackgroundColor3 = color,
-                    Size = UDim2.new(0, 30, 0, 30),
-                    Text = "",
-                    Parent = ColorPalette
-                })
-                AddCorner(ColorOption, 6)
-                
-                ColorOption.MouseButton1Click:Connect(function()
-                    Color = color
-                    ColorDisplay.BackgroundColor3 = Color
-                    if options.Callback then
-                        options.Callback(Color)
-                    end
-                end)
-            end
-            
-            ColorBtn.MouseButton1Click:Connect(function()
-                Opened = not Opened
-                local Height = Opened and 155 or 38
-                Tween(ColorPicker, {Size = UDim2.new(1, 0, 0, Height)})
-            end)
-            
-            local ColorAPI = {}
-            function ColorAPI:Set(color)
-                Color = color
-                ColorDisplay.BackgroundColor3 = Color
-                if options.Callback then
-                    options.Callback(Color)
-                end
-            end
-            
-            function ColorAPI:Get()
-                return Color
-            end
-            
-            return ColorAPI
         end
         
-        return Tab
-    end
-    
-    -- Notification System
-    function Window:Notify(options)
-        options = options or {}
-        
-        local NotifContainer = ScreenGui:FindFirstChild("NotifContainer")
-        if not NotifContainer then
-            NotifContainer = Create("Frame", {
-                Name = "NotifContainer",
-                BackgroundTransparency = 1,
-                Position = UDim2.new(1, -10, 1, -10),
-                Size = UDim2.new(0, 300, 1, -20),
-                AnchorPoint = Vector2.new(1, 1),
-                Parent = ScreenGui
-            })
-            
-            Create("UIListLayout", {
-                Padding = UDim.new(0, 8),
-                VerticalAlignment = Enum.VerticalAlignment.Bottom,
-                HorizontalAlignment = Enum.HorizontalAlignment.Right,
-                Parent = NotifContainer
-            })
+        local upvalueCount = self.reader:ReadVarInt()
+        proto.upvalueNames = {}
+        for i = 1, upvalueCount do
+            proto.upvalueNames[i] = self.reader:ReadVarInt()
         end
-        
-        local TypeColors = {
-            Success = Window.Theme.Success,
-            Error = Window.Theme.Error,
-            Warning = Window.Theme.Warning,
-            Info = Window.Theme.Primary
-        }
-        
-        local Notif = Create("Frame", {
-            BackgroundColor3 = Window.Theme.Background,
-            Size = UDim2.new(0, 280, 0, 0),
-            ClipsDescendants = true,
-            Parent = NotifContainer
-        })
-        AddCorner(Notif, 10)
-        AddStroke(Notif, TypeColors[options.Type or "Info"], 2)
-        
-        local NotifAccent = Create("Frame", {
-            BackgroundColor3 = TypeColors[options.Type or "Info"],
-            Size = UDim2.new(0, 4, 1, 0),
-            Parent = Notif
-        })
-        
-        local NotifTitle = Create("TextLabel", {
-            BackgroundTransparency = 1,
-            Position = UDim2.new(0, 15, 0, 10),
-            Size = UDim2.new(1, -25, 0, 20),
-            Font = Config.Font,
-            Text = options.Title or "Notification",
-            TextColor3 = Window.Theme.Text,
-            TextSize = 14,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            Parent = Notif
-        })
-        
-        local NotifContent = Create("TextLabel", {
-            BackgroundTransparency = 1,
-            Position = UDim2.new(0, 15, 0, 32),
-            Size = UDim2.new(1, -25, 0, 35),
-            Font = Config.FontLight,
-            Text = options.Content or "",
-            TextColor3 = Window.Theme.SubText,
-            TextSize = 12,
-            TextWrapped = true,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Top,
-            Parent = Notif
-        })
-        
-        -- Animate in
-        Tween(Notif, {Size = UDim2.new(0, 280, 0, 75)}, 0.3)
-        
-        -- Auto remove
-        task.delay(options.Duration or 5, function()
-            Tween(Notif, {Size = UDim2.new(0, 280, 0, 0)}, 0.3)
-            task.wait(0.3)
-            Notif:Destroy()
-        end)
     end
     
-    return Window
+    return proto
 end
 
-return SmoothLib
+--// Ana Decompiler Class
+local LuauDecompiler = {}
+LuauDecompiler.__index = LuauDecompiler
+
+function LuauDecompiler.new()
+    local self = setmetatable({}, LuauDecompiler)
+    self.strings = {}
+    self.protos = {}
+    self.mainProto = nil
+    self.output = {}
+    self.indent = 0
+    self.varCounter = 0
+    return self
+end
+
+function LuauDecompiler:AddLine(text)
+    local indentStr = string.rep("    ", self.indent)
+    table.insert(self.output, indentStr .. text)
+end
+
+function LuauDecompiler:NewVar()
+    self.varCounter = self.varCounter + 1
+    return "v" .. self.varCounter
+end
+
+function LuauDecompiler:GetConstant(proto, index)
+    local const = proto.constants[index + 1]
+    if not const then return "nil" end
+    
+    if const.type == "nil" then
+        return "nil"
+    elseif const.type == "boolean" then
+        return const.value and "true" or "false"
+    elseif const.type == "number" then
+        return tostring(const.value)
+    elseif const.type == "string" then
+        return string.format('"%s"', const.value:gsub('"', '\\"'):gsub("\n", "\\n"))
+    else
+        return "nil --[[ " .. const.type .. " ]]"
+    end
+end
+
+function LuauDecompiler:GetString(index)
+    return self.strings[index] or ("string_" .. index)
+end
+
+function LuauDecompiler:DecompileProto(proto, name)
+    name = name or "main"
+    
+    -- Fonksiyon header
+    local params = {}
+    for i = 1, proto.numParams do
+        table.insert(params, "arg" .. i)
+    end
+    if proto.isVararg then
+        table.insert(params, "...")
+    end
+    
+    self:AddLine(string.format("local function %s(%s)", name, table.concat(params, ", ")))
+    self.indent = self.indent + 1
+    
+    -- Upvalues comment
+    if proto.numUpvalues > 0 then
+        self:AddLine(string.format("-- Upvalues: %d", proto.numUpvalues))
+    end
+    
+    -- Instructions decompile
+    local registers = {}
+    local i = 1
+    
+    while i <= #proto.instructions do
+        local instr = proto.instructions[i]
+        local op = instr.opname
+        local A, B, C, D = instr.A, instr.B, instr.C, instr.D
+        
+        local line = self:DecompileInstruction(proto, instr, registers, i)
+        if line and line ~= "" then
+            self:AddLine(line)
+        end
+        
+        i = i + 1
+    end
+    
+    self.indent = self.indent - 1
+    self:AddLine("end")
+end
+
+function LuauDecompiler:DecompileInstruction(proto, instr, registers, pc)
+    local op = instr.opname
+    local A, B, C, D = instr.A, instr.B, instr.C, instr.D
+    
+    local function reg(r)
+        return registers[r] or ("v" .. r)
+    end
+    
+    if op == "NOP" then
+        return ""
+        
+    elseif op == "LOADNIL" then
+        registers[A] = "nil"
+        return string.format("local v%d = nil", A)
+        
+    elseif op == "LOADB" then
+        local value = B == 1 and "true" or "false"
+        registers[A] = value
+        return string.format("local v%d = %s", A, value)
+        
+    elseif op == "LOADN" then
+        registers[A] = tostring(D)
+        return string.format("local v%d = %d", A, D)
+        
+    elseif op == "LOADK" then
+        local const = self:GetConstant(proto, D)
+        registers[A] = const
+        return string.format("local v%d = %s", A, const)
+        
+    elseif op == "MOVE" then
+        registers[A] = reg(B)
+        return string.format("v%d = v%d", A, B)
+        
+    elseif op == "GETGLOBAL" then
+        local name = self:GetConstant(proto, instr.Bx)
+        registers[A] = name
+        return string.format("local v%d = %s", A, name)
+        
+    elseif op == "SETGLOBAL" then
+        local name = self:GetConstant(proto, instr.Bx)
+        return string.format("%s = v%d", name, A)
+        
+    elseif op == "GETUPVAL" then
+        return string.format("local v%d = upval_%d", A, B)
+        
+    elseif op == "SETUPVAL" then
+        return string.format("upval_%d = v%d", B, A)
+        
+    elseif op == "GETTABLE" then
+        return string.format("v%d = v%d[v%d]", A, B, C)
+        
+    elseif op == "SETTABLE" then
+        return string.format("v%d[v%d] = v%d", B, C, A)
+        
+    elseif op == "GETTABLEKS" then
+        local key = self:GetConstant(proto, C)
+        -- String constant ise . kullan
+        if key:sub(1,1) == '"' then
+            key = key:sub(2, -2) -- quotes kaldır
+            return string.format("v%d = v%d.%s", A, B, key)
+        end
+        return string.format("v%d = v%d[%s]", A, B, key)
+        
+    elseif op == "SETTABLEKS" then
+        local key = self:GetConstant(proto, C)
+        if key:sub(1,1) == '"' then
+            key = key:sub(2, -2)
+            return string.format("v%d.%s = v%d", B, key, A)
+        end
+        return string.format("v%d[%s] = v%d", B, key, A)
+        
+    elseif op == "NEWTABLE" then
+        return string.format("local v%d = {}", A)
+        
+    elseif op == "ADD" then
+        return string.format("v%d = v%d + v%d", A, B, C)
+    elseif op == "SUB" then
+        return string.format("v%d = v%d - v%d", A, B, C)
+    elseif op == "MUL" then
+        return string.format("v%d = v%d * v%d", A, B, C)
+    elseif op == "DIV" then
+        return string.format("v%d = v%d / v%d", A, B, C)
+    elseif op == "MOD" then
+        return string.format("v%d = v%d %% v%d", A, B, C)
+    elseif op == "POW" then
+        return string.format("v%d = v%d ^ v%d", A, B, C)
+        
+    elseif op == "ADDK" then
+        local k = self:GetConstant(proto, C)
+        return string.format("v%d = v%d + %s", A, B, k)
+        
+    elseif op == "CONCAT" then
+        local parts = {}
+        for r = B, C do
+            table.insert(parts, "v" .. r)
+        end
+        return string.format("v%d = %s", A, table.concat(parts, " .. "))
+        
+    elseif op == "NOT" then
+        return string.format("v%d = not v%d", A, B)
+        
+    elseif op == "MINUS" then
+        return string.format("v%d = -v%d", A, B)
+        
+    elseif op == "LENGTH" then
+        return string.format("v%d = #v%d", A, B)
+        
+    elseif op == "CALL" then
+        local args = {}
+        for r = A + 1, A + B - 1 do
+            table.insert(args, "v" .. r)
+        end
+        
+        if C == 0 then
+            return string.format("v%d(%s)", A, table.concat(args, ", "))
+        elseif C == 1 then
+            return string.format("v%d(%s)", A, table.concat(args, ", "))
+        else
+            local rets = {}
+            for r = A, A + C - 2 do
+                table.insert(rets, "v" .. r)
+            end
+            return string.format("%s = v%d(%s)", table.concat(rets, ", "), A, table.concat(args, ", "))
+        end
+        
+    elseif op == "RETURN" then
+        if B == 0 then
+            return "return"
+        elseif B == 1 then
+            return "return"
+        else
+            local rets = {}
+            for r = A, A + B - 2 do
+                table.insert(rets, "v" .. r)
+            end
+            return string.format("return %s", table.concat(rets, ", "))
+        end
+        
+    elseif op == "JUMP" then
+        return string.format("-- JUMP -> %d", pc + D + 1)
+        
+    elseif op == "JUMPIF" then
+        return string.format("if v%d then -- jump %d", A, D)
+        
+    elseif op == "JUMPIFNOT" then
+        return string.format("if not v%d then -- jump %d", A, D)
+        
+    elseif op == "JUMPIFEQ" then
+        return string.format("if v%d == v%d then -- jump", A, D)
+        
+    elseif op == "JUMPIFLT" then
+        return string.format("if v%d < v%d then -- jump", A, D)
+        
+    elseif op == "JUMPIFLE" then
+        return string.format("if v%d <= v%d then -- jump", A, D)
+        
+    elseif op == "FORNPREP" then
+        return string.format("for v%d = v%d, v%d, v%d do", A + 3, A, A + 1, A + 2)
+        
+    elseif op == "FORNLOOP" then
+        return "end -- for loop"
+        
+    elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
+        return string.format("for v%d, v%d in v%d, v%d, v%d do", A + 3, A + 4, A, A + 1, A + 2)
+        
+    elseif op == "FORGLOOP" or op == "FORGLOOP_NEXT" or op == "FORGLOOP_INEXT" then
+        return "end -- for in loop"
+        
+    elseif op == "NEWCLOSURE" then
+        return string.format("local v%d = function() end -- closure %d", A, D)
+        
+    elseif op == "NAMECALL" then
+        local method = self:GetConstant(proto, C)
+        if method:sub(1,1) == '"' then
+            method = method:sub(2, -2)
+        end
+        return string.format("-- NAMECALL v%d:%s", B, method)
+        
+    elseif op == "GETIMPORT" then
+        return string.format("local v%d = import_%d", A, D)
+        
+    elseif op == "CAPTURE" then
+        local captureTypes = {[0] = "VAL", [1] = "REF", [2] = "UPVAL"}
+        return string.format("-- CAPTURE %s v%d", captureTypes[A] or "?", B)
+        
+    else
+        return string.format("-- %s A=%d B=%d C=%d D=%d", op, A, B, C, D)
+    end
+end
+
+--// Ana decompile fonksiyonu
+function LuauDecompiler:Decompile(bytecode)
+    if type(bytecode) ~= "string" then
+        return nil, "Bytecode string olmalı!"
+    end
+    
+    local reader = BytecodeReader.new(bytecode)
+    
+    -- Version check
+    local version = reader:ReadByte()
+    if version == 0 then
+        return nil, "Bytecode hatalı veya şifreli!"
+    end
+    
+    if version < 3 or version > 5 then
+        return nil, "Desteklenmeyen bytecode versiyonu: " .. version
+    end
+    
+    self.output = {}
+    self:AddLine("--[[ Decompiled by Custom Luau Decompiler ]]")
+    self:AddLine(string.format("-- Bytecode Version: %d", version))
+    self:AddLine("")
+    
+    -- String table
+    local stringCount = reader:ReadVarInt()
+    self.strings = {}
+    
+    for i = 1, stringCount do
+        self.strings[i] = reader:ReadString()
+    end
+    
+    self:AddLine(string.format("-- Strings: %d", stringCount))
+    
+    -- Proto table
+    local protoCount = reader:ReadVarInt()
+    self.protos = {}
+    
+    self:AddLine(string.format("-- Protos: %d", protoCount))
+    self:AddLine("")
+    
+    local protoParser = ProtoParser.new(reader)
+    
+    for i = 1, protoCount do
+        self.protos[i] = protoParser:Parse()
+    end
+    
+    -- Main proto
+    local mainProtoId = reader:ReadVarInt()
+    self.mainProto = self.protos[mainProtoId + 1]
+    
+    -- Decompile main proto
+    if self.mainProto then
+        self:DecompileProto(self.mainProto, "main")
+        self:AddLine("")
+        self:AddLine("return main")
+    end
+    
+    return table.concat(self.output, "\n")
+end
+
+--// Script'ten bytecode al ve decompile et
+function LuauDecompiler:DecompileScript(script)
+    if not script then
+        return nil, "Script nil!"
+    end
+    
+    -- Bytecode'u al
+    local bytecode
+    
+    if getscriptbytecode then
+        local success, result = pcall(getscriptbytecode, script)
+        if success then
+            bytecode = result
+        else
+            return nil, "Bytecode alınamadı: " .. tostring(result)
+        end
+    else
+        return nil, "getscriptbytecode fonksiyonu bulunamadı!"
+    end
+    
+    if not bytecode or bytecode == "" then
+        return nil, "Bytecode boş!"
+    end
+    
+    -- Header ekle
+    local header = string.format(
+        "--[[\n    Script: %s\n    Path: %s\n    Type: %s\n]]\n\n",
+        script.Name,
+        script:GetFullName(),
+        script.ClassName
+    )
+    
+    local code, err = self:Decompile(bytecode)
+    
+    if code then
+        return header .. code
+    else
+        return nil, err
+    end
+end
+
+return LuauDecompiler
