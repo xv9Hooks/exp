@@ -1,37 +1,27 @@
 --[[
-    Decompiler Override System
-    Executor'ın decompiler'ını kendi yazdiginla degistirir
+    Luau Decompiler - Fixed Version
 ]]
-
-local DecompilerOverride = {}
-
--- Orijinalleri sakla
-local Originals = {
-    decompile = decompile,
-    getscriptbytecode = getscriptbytecode,
-}
-
--- ========================
--- KENDI DECOMPILER'IN
--- ========================
 
 local BytecodeReader = {}
 BytecodeReader.__index = BytecodeReader
 
 function BytecodeReader.new(data)
-    return setmetatable({data = data, pos = 1}, BytecodeReader)
+    return setmetatable({data = data, pos = 1, len = #data}, BytecodeReader)
 end
 
 function BytecodeReader:ReadByte()
-    local b = string.byte(self.data, self.pos) or 0
+    if self.pos > self.len then return 0 end
+    local b = string.byte(self.data, self.pos)
     self.pos = self.pos + 1
-    return b
+    return b or 0
 end
 
 function BytecodeReader:ReadUInt32()
-    local a, b, c, d = string.byte(self.data, self.pos, self.pos + 3)
-    self.pos = self.pos + 4
-    return (a or 0) + ((b or 0) * 256) + ((c or 0) * 65536) + ((d or 0) * 16777216)
+    local a = self:ReadByte()
+    local b = self:ReadByte()
+    local c = self:ReadByte()
+    local d = self:ReadByte()
+    return a + (b * 256) + (c * 65536) + (d * 16777216)
 end
 
 function BytecodeReader:ReadVarInt()
@@ -55,273 +45,595 @@ end
 function BytecodeReader:ReadDouble()
     local bytes = {}
     for i = 1, 8 do bytes[i] = self:ReadByte() end
+    
     local sign = bit32.rshift(bytes[8], 7)
     local exp = bit32.lshift(bit32.band(bytes[8], 0x7F), 4) + bit32.rshift(bytes[7], 4)
+    
     if exp == 0 then return 0 end
+    if exp == 2047 then return 0/0 end
+    
     local mantissa = bit32.band(bytes[7], 0x0F)
-    for i = 6, 1, -1 do mantissa = mantissa * 256 + bytes[i] end
+    for i = 6, 1, -1 do
+        mantissa = mantissa * 256 + bytes[i]
+    end
+    
     local val = (1 + mantissa / 4503599627370496) * (2 ^ (exp - 1023))
     return sign == 1 and -val or val
 end
 
--- Opcode tablosu
+function BytecodeReader:Skip(n)
+    self.pos = self.pos + n
+end
+
+-- Opcodes
 local OP = {
-    [0]="NOP",[2]="LOADNIL",[3]="LOADB",[4]="LOADN",[5]="LOADK",
+    [0]="NOP",[1]="BREAK",[2]="LOADNIL",[3]="LOADB",[4]="LOADN",[5]="LOADK",
     [6]="MOVE",[7]="GETGLOBAL",[8]="SETGLOBAL",[9]="GETUPVAL",[10]="SETUPVAL",
-    [12]="GETIMPORT",[13]="GETTABLE",[14]="SETTABLE",[15]="GETTABLEKS",
-    [16]="SETTABLEKS",[19]="NEWCLOSURE",[20]="NAMECALL",[21]="CALL",
-    [22]="RETURN",[23]="JUMP",[25]="JUMPIF",[26]="JUMPIFNOT",
-    [33]="ADD",[34]="SUB",[35]="MUL",[36]="DIV",[49]="CONCAT",
-    [50]="NOT",[51]="MINUS",[52]="LENGTH",[53]="NEWTABLE",
-    [56]="FORNPREP",[57]="FORNLOOP",[58]="FORGLOOP",[63]="GETVARARGS",
+    [11]="CLOSEUPVALS",[12]="GETIMPORT",[13]="GETTABLE",[14]="SETTABLE",
+    [15]="GETTABLEKS",[16]="SETTABLEKS",[17]="GETTABLEN",[18]="SETTABLEN",
+    [19]="NEWCLOSURE",[20]="NAMECALL",[21]="CALL",[22]="RETURN",
+    [23]="JUMP",[24]="JUMPBACK",[25]="JUMPIF",[26]="JUMPIFNOT",
+    [27]="JUMPIFEQ",[28]="JUMPIFLE",[29]="JUMPIFLT",[30]="JUMPIFNOTEQ",
+    [31]="JUMPIFNOTLE",[32]="JUMPIFNOTLT",[33]="ADD",[34]="SUB",
+    [35]="MUL",[36]="DIV",[37]="MOD",[38]="POW",[39]="ADDK",[40]="SUBK",
+    [41]="MULK",[42]="DIVK",[43]="MODK",[44]="POWK",[45]="AND",[46]="OR",
+    [47]="ANDK",[48]="ORK",[49]="CONCAT",[50]="NOT",[51]="MINUS",
+    [52]="LENGTH",[53]="NEWTABLE",[54]="DUPTABLE",[55]="SETLIST",
+    [56]="FORNPREP",[57]="FORNLOOP",[58]="FORGLOOP",[59]="FORGPREP_INEXT",
+    [60]="FORGLOOP_INEXT",[61]="FORGPREP_NEXT",[62]="FORGLOOP_NEXT",
+    [63]="GETVARARGS",[64]="DUPCLOSURE",[65]="PREPVARARGS",[66]="LOADKX",
+    [67]="JUMPX",[68]="FASTCALL",[69]="COVERAGE",[70]="CAPTURE",
+    [71]="JUMPIFEQK",[72]="JUMPIFNOTEQK",[73]="FASTCALL1",[74]="FASTCALL2",
+    [75]="FASTCALL2K",[76]="FORGPREP",[77]="JUMPXEQKNIL",[78]="JUMPXEQKB",
+    [79]="JUMPXEQKN",[80]="JUMPXEQKS",
 }
 
--- Ana Decompiler
 local Decompiler = {}
+Decompiler.__index = Decompiler
+
+function Decompiler.new()
+    return setmetatable({
+        strings = {},
+        protos = {},
+        output = {},
+    }, Decompiler)
+end
 
 function Decompiler:Parse(bytecode)
+    if not bytecode or #bytecode < 2 then
+        return nil, "Invalid bytecode"
+    end
+    
     local r = BytecodeReader.new(bytecode)
     
+    -- Version
     local version = r:ReadByte()
-    if version == 0 then return nil, "Compile error in bytecode" end
+    if version == 0 then
+        -- Error message follows
+        local errLen = r:ReadVarInt()
+        local errMsg = bytecode:sub(r.pos, r.pos + errLen - 1)
+        return nil, "Bytecode error: " .. errMsg
+    end
+    
+    if version < 3 or version > 6 then
+        return nil, "Unsupported bytecode version: " .. version
+    end
+    
+    -- Types version (v6+)
+    local typesVersion = 0
+    if version >= 4 then
+        typesVersion = r:ReadByte()
+    end
     
     -- Strings
-    local strCount = r:ReadVarInt()
-    local strings = {}
-    for i = 1, strCount do strings[i] = r:ReadString() end
+    local stringCount = r:ReadVarInt()
+    self.strings = {}
+    for i = 1, stringCount do
+        self.strings[i] = r:ReadString()
+    end
     
     -- Protos
     local protoCount = r:ReadVarInt()
-    local protos = {}
+    self.protos = {}
     
     for i = 1, protoCount do
-        local proto = {
-            maxStack = r:ReadByte(),
-            numParams = r:ReadByte(),
-            numUpvals = r:ReadByte(),
-            isVararg = r:ReadByte(),
-            flags = r:ReadByte(),
-        }
+        local proto = {}
         
-        -- Type info skip
-        local typeSize = r:ReadVarInt()
-        for j = 1, typeSize do r:ReadByte() end
+        proto.maxStack = r:ReadByte()
+        proto.numParams = r:ReadByte()
+        proto.numUpvalues = r:ReadByte()
+        proto.isVararg = r:ReadByte()
+        
+        -- Flags (v6+)
+        if version >= 4 then
+            proto.flags = r:ReadByte()
+            local typeSize = r:ReadVarInt()
+            r:Skip(typeSize)
+        end
         
         -- Code
         local codeSize = r:ReadVarInt()
         proto.code = {}
-        for j = 1, codeSize do proto.code[j] = r:ReadUInt32() end
+        for j = 1, codeSize do
+            proto.code[j] = r:ReadUInt32()
+        end
         
         -- Constants
-        local kSize = r:ReadVarInt()
+        local constSize = r:ReadVarInt()
         proto.constants = {}
-        for j = 1, kSize do
-            local t = r:ReadByte()
-            if t == 0 then proto.constants[j] = {t="nil"}
-            elseif t == 1 then proto.constants[j] = {t="bool", v=r:ReadByte()~=0}
-            elseif t == 2 then proto.constants[j] = {t="num", v=r:ReadDouble()}
-            elseif t == 3 then proto.constants[j] = {t="str", v=strings[r:ReadVarInt()]}
-            elseif t == 4 then proto.constants[j] = {t="imp", v=r:ReadUInt32()}
-            elseif t == 5 then
-                local n = r:ReadVarInt()
-                for k = 1, n do r:ReadVarInt() end
-                proto.constants[j] = {t="tbl"}
-            elseif t == 6 then proto.constants[j] = {t="cls", v=r:ReadVarInt()}
+        for j = 1, constSize do
+            local kType = r:ReadByte()
+            
+            if kType == 0 then
+                proto.constants[j] = {t = "nil", v = nil}
+            elseif kType == 1 then
+                proto.constants[j] = {t = "bool", v = r:ReadByte() ~= 0}
+            elseif kType == 2 then
+                proto.constants[j] = {t = "number", v = r:ReadDouble()}
+            elseif kType == 3 then
+                local idx = r:ReadVarInt()
+                proto.constants[j] = {t = "string", v = self.strings[idx] or ""}
+            elseif kType == 4 then
+                proto.constants[j] = {t = "import", v = r:ReadUInt32()}
+            elseif kType == 5 then
+                local len = r:ReadVarInt()
+                local keys = {}
+                for k = 1, len do
+                    keys[k] = r:ReadVarInt()
+                end
+                proto.constants[j] = {t = "table", v = keys}
+            elseif kType == 6 then
+                proto.constants[j] = {t = "closure", v = r:ReadVarInt()}
+            else
+                proto.constants[j] = {t = "unknown", v = nil}
             end
         end
         
         -- Child protos
-        local pSize = r:ReadVarInt()
-        for j = 1, pSize do r:ReadVarInt() end
-        
-        -- Debug
-        proto.line = r:ReadVarInt()
-        local nameIdx = r:ReadVarInt()
-        proto.name = strings[nameIdx] or "func"
-        
-        -- Skip line info
-        if r:ReadByte() ~= 0 then
-            local intervals = math.floor((codeSize-1)/4)+1
-            for j = 1, codeSize do r:ReadByte() end
-            for j = 1, intervals do r:ReadUInt32() end
+        local childCount = r:ReadVarInt()
+        proto.children = {}
+        for j = 1, childCount do
+            proto.children[j] = r:ReadVarInt()
         end
         
-        -- Skip debug info
-        if r:ReadByte() ~= 0 then
-            local lc = r:ReadVarInt()
-            for j = 1, lc do r:ReadVarInt();r:ReadVarInt();r:ReadVarInt();r:ReadByte() end
-            local uc = r:ReadVarInt()
-            for j = 1, uc do r:ReadVarInt() end
+        -- Debug info
+        proto.lineDefined = r:ReadVarInt()
+        local debugNameIdx = r:ReadVarInt()
+        proto.debugName = self.strings[debugNameIdx] or ("func_" .. i)
+        
+        -- Line info (skip)
+        local hasLineInfo = r:ReadByte()
+        if hasLineInfo ~= 0 then
+            local intervals = math.floor((codeSize - 1) / 4) + 1
+            r:Skip(codeSize) -- lineinfo
+            r:Skip(intervals * 4) -- abslineinfo
         end
         
-        protos[i] = proto
+        -- Debug locals (skip)
+        local hasDebugInfo = r:ReadByte()
+        if hasDebugInfo ~= 0 then
+            local sizeLocals = r:ReadVarInt()
+            for j = 1, sizeLocals do
+                r:ReadVarInt() -- name
+                r:ReadVarInt() -- startpc
+                r:ReadVarInt() -- endpc
+                r:ReadByte()   -- reg
+            end
+            local sizeUpvalues = r:ReadVarInt()
+            for j = 1, sizeUpvalues do
+                r:ReadVarInt() -- name
+            end
+        end
+        
+        self.protos[i] = proto
     end
     
-    local mainIdx = r:ReadVarInt()
-    return {v=version, strings=strings, protos=protos, main=mainIdx}
+    -- Main proto index
+    local mainProto = r:ReadVarInt()
+    
+    return {
+        version = version,
+        typesVersion = typesVersion,
+        mainProto = mainProto,
+        protoCount = protoCount
+    }
 end
 
-function Decompiler:GetK(proto, idx)
-    local k = proto.constants[idx+1]
+function Decompiler:K(proto, idx)
+    local k = proto.constants[idx + 1]
     if not k then return "nil" end
-    if k.t=="nil" then return "nil"
-    elseif k.t=="bool" then return tostring(k.v)
-    elseif k.t=="num" then return k.v==math.floor(k.v) and tostring(math.floor(k.v)) or tostring(k.v)
-    elseif k.t=="str" then return string.format("%q", k.v)
-    else return "nil" end
+    
+    if k.t == "nil" then
+        return "nil"
+    elseif k.t == "bool" then
+        return tostring(k.v)
+    elseif k.t == "number" then
+        local v = k.v
+        if v == math.floor(v) and v >= -2147483648 and v <= 2147483647 then
+            return tostring(math.floor(v))
+        end
+        return tostring(v)
+    elseif k.t == "string" then
+        -- Escape string properly
+        local s = k.v
+        s = s:gsub("\\", "\\\\")
+        s = s:gsub("\"", "\\\"")
+        s = s:gsub("\n", "\\n")
+        s = s:gsub("\r", "\\r")
+        s = s:gsub("\t", "\\t")
+        return '"' .. s .. '"'
+    else
+        return "nil"
+    end
+end
+
+function Decompiler:KString(proto, idx)
+    local k = proto.constants[idx + 1]
+    if k and k.t == "string" then
+        return k.v
+    end
+    return "unknown"
 end
 
 function Decompiler:DecompileProto(data, pIdx)
-    local proto = data.protos[pIdx+1]
-    if not proto then return "-- invalid proto" end
+    -- FIX: Proper index handling
+    local proto
+    
+    -- Try direct index first (0-based from bytecode)
+    if pIdx and self.protos[pIdx + 1] then
+        proto = self.protos[pIdx + 1]
+    -- Fallback to first proto
+    elseif self.protos[1] then
+        proto = self.protos[1]
+        pIdx = 0
+    else
+        return "-- Error: No protos found in bytecode"
+    end
     
     local out = {}
     local indent = 0
-    local function emit(s) out[#out+1] = string.rep("    ",indent)..s end
-    local function R(n) return "v"..n end
-    local function K(n) return self:GetK(proto,n) end
     
-    -- Header
-    local params = {}
-    for i=0,proto.numParams-1 do params[#params+1]="a"..i end
-    if proto.isVararg>0 then params[#params+1]="..." end
-    emit("function "..(proto.name or "func").."("..table.concat(params,", ")..")")
-    indent = indent + 1
-    
-    local i = 1
-    while i <= #proto.code do
-        local inst = proto.code[i]
-        local op = bit32.band(inst, 0xFF)
-        local A = bit32.band(bit32.rshift(inst,8), 0xFF)
-        local B = bit32.band(bit32.rshift(inst,16), 0xFF)
-        local C = bit32.band(bit32.rshift(inst,24), 0xFF)
-        local D = bit32.band(bit32.rshift(inst,16), 0xFFFF)
-        local sD = D>32767 and D-65536 or D
-        local opname = OP[op] or "UNK"
-        
-        if opname=="LOADNIL" then emit(R(A).." = nil")
-        elseif opname=="LOADB" then emit(R(A).." = "..(B==1 and "true" or "false"))
-        elseif opname=="LOADN" then emit(R(A).." = "..sD)
-        elseif opname=="LOADK" then emit(R(A).." = "..K(D))
-        elseif opname=="MOVE" then emit(R(A).." = "..R(B))
-        elseif opname=="GETGLOBAL" then
-            local aux = proto.code[i+1] or 0
-            emit(R(A).." = "..K(bit32.band(aux,0xFFFFFF)))
-            i=i+1
-        elseif opname=="SETGLOBAL" then
-            local aux = proto.code[i+1] or 0
-            emit(K(bit32.band(aux,0xFFFFFF)).." = "..R(A))
-            i=i+1
-        elseif opname=="GETTABLEKS" then emit(R(A).." = "..R(B).."["..K(C).."]")
-        elseif opname=="SETTABLEKS" then emit(R(B).."["..K(C).."] = "..R(A))
-        elseif opname=="GETTABLE" then emit(R(A).." = "..R(B).."["..R(C).."]")
-        elseif opname=="SETTABLE" then emit(R(B).."["..R(C).."] = "..R(A))
-        elseif opname=="NAMECALL" then
-            emit("-- "..R(A).." = "..R(B)..":"..K(C))
-            i=i+1
-        elseif opname=="CALL" then
-            local args={}
-            for j=1,B-1 do args[#args+1]=R(A+j) end
-            emit(R(A).."("..table.concat(args,", ")..")")
-        elseif opname=="RETURN" then
-            if B<=1 then emit("return")
-            else
-                local rets={}
-                for j=0,B-2 do rets[#rets+1]=R(A+j) end
-                emit("return "..table.concat(rets,", "))
-            end
-        elseif opname=="ADD" then emit(R(A).." = "..R(B).." + "..R(C))
-        elseif opname=="SUB" then emit(R(A).." = "..R(B).." - "..R(C))
-        elseif opname=="MUL" then emit(R(A).." = "..R(B).." * "..R(C))
-        elseif opname=="DIV" then emit(R(A).." = "..R(B).." / "..R(C))
-        elseif opname=="CONCAT" then
-            local p={}
-            for j=B,C do p[#p+1]=R(j) end
-            emit(R(A).." = "..table.concat(p," .. "))
-        elseif opname=="NOT" then emit(R(A).." = not "..R(B))
-        elseif opname=="MINUS" then emit(R(A).." = -"..R(B))
-        elseif opname=="LENGTH" then emit(R(A).." = #"..R(B))
-        elseif opname=="NEWTABLE" then emit(R(A).." = {}")
-        elseif opname=="JUMP" then emit("-- jump "..sD)
-        elseif opname=="JUMPIF" then emit("if "..R(A).." then")
-        elseif opname=="JUMPIFNOT" then emit("if not "..R(A).." then")
-        elseif opname=="FORNPREP" then emit("for "..R(A+3).." = "..R(A)..", "..R(A+1)..", "..R(A+2).." do"); indent=indent+1
-        elseif opname=="FORNLOOP" then indent=indent-1; emit("end")
-        elseif opname=="GETVARARGS" then emit(R(A).." = ...")
-        elseif opname=="NEWCLOSURE" then emit(R(A).." = function() end")
-        elseif opname=="GETIMPORT" then
-            local aux = proto.code[i+1] or 0
-            emit(R(A).." = import("..aux..")")
-            i=i+1
-        else emit("-- "..opname.." "..A.." "..B.." "..C)
-        end
-        i=i+1
+    local function emit(s)
+        table.insert(out, string.rep("    ", indent) .. s)
     end
     
-    indent=indent-1
+    local function R(n)
+        return "v" .. n
+    end
+    
+    local function K(n)
+        return self:K(proto, n)
+    end
+    
+    -- Function header
+    local params = {}
+    for i = 0, proto.numParams - 1 do
+        table.insert(params, "a" .. i)
+    end
+    if proto.isVararg and proto.isVararg > 0 then
+        table.insert(params, "...")
+    end
+    
+    local funcName = proto.debugName or "main"
+    if pIdx == data.mainProto then
+        funcName = "main"
+    end
+    
+    emit("function " .. funcName .. "(" .. table.concat(params, ", ") .. ")")
+    indent = indent + 1
+    
+    -- Decompile instructions
+    local i = 1
+    local codeLen = #proto.code
+    
+    while i <= codeLen do
+        local inst = proto.code[i]
+        local op = bit32.band(inst, 0xFF)
+        local A = bit32.band(bit32.rshift(inst, 8), 0xFF)
+        local B = bit32.band(bit32.rshift(inst, 16), 0xFF)
+        local C = bit32.band(bit32.rshift(inst, 24), 0xFF)
+        local D = bit32.band(bit32.rshift(inst, 16), 0xFFFF)
+        local sD = D > 32767 and D - 65536 or D
+        
+        local opname = OP[op] or "UNKNOWN_" .. op
+        local skipNext = false
+        
+        -- Handle each opcode
+        if opname == "NOP" or opname == "BREAK" then
+            -- Skip
+        elseif opname == "LOADNIL" then
+            emit(R(A) .. " = nil")
+        elseif opname == "LOADB" then
+            emit(R(A) .. " = " .. (B == 1 and "true" or "false"))
+            if C ~= 0 then
+                -- Skip next instruction
+            end
+        elseif opname == "LOADN" then
+            emit(R(A) .. " = " .. sD)
+        elseif opname == "LOADK" then
+            emit(R(A) .. " = " .. K(D))
+        elseif opname == "MOVE" then
+            emit(R(A) .. " = " .. R(B))
+        elseif opname == "GETGLOBAL" then
+            local aux = proto.code[i + 1]
+            if aux then
+                local kIdx = bit32.band(aux, 0xFFFFFF)
+                emit(R(A) .. " = " .. self:KString(proto, kIdx))
+            else
+                emit(R(A) .. " = _G[?]")
+            end
+            skipNext = true
+        elseif opname == "SETGLOBAL" then
+            local aux = proto.code[i + 1]
+            if aux then
+                local kIdx = bit32.band(aux, 0xFFFFFF)
+                emit(self:KString(proto, kIdx) .. " = " .. R(A))
+            else
+                emit("_G[?] = " .. R(A))
+            end
+            skipNext = true
+        elseif opname == "GETUPVAL" then
+            emit(R(A) .. " = upval_" .. B)
+        elseif opname == "SETUPVAL" then
+            emit("upval_" .. B .. " = " .. R(A))
+        elseif opname == "GETIMPORT" then
+            local aux = proto.code[i + 1]
+            if aux then
+                -- Decode import
+                local count = bit32.rshift(aux, 30)
+                local id0 = bit32.band(bit32.rshift(aux, 20), 0x3FF)
+                local id1 = bit32.band(bit32.rshift(aux, 10), 0x3FF)
+                local id2 = bit32.band(aux, 0x3FF)
+                
+                local path = self.strings[id0] or "?"
+                if count >= 2 then path = path .. "." .. (self.strings[id1] or "?") end
+                if count >= 3 then path = path .. "." .. (self.strings[id2] or "?") end
+                
+                emit(R(A) .. " = " .. path)
+            else
+                emit(R(A) .. " = import(?)")
+            end
+            skipNext = true
+        elseif opname == "GETTABLE" then
+            emit(R(A) .. " = " .. R(B) .. "[" .. R(C) .. "]")
+        elseif opname == "SETTABLE" then
+            emit(R(B) .. "[" .. R(C) .. "] = " .. R(A))
+        elseif opname == "GETTABLEKS" then
+            local kStr = self:KString(proto, C)
+            if kStr:match("^[%a_][%w_]*$") then
+                emit(R(A) .. " = " .. R(B) .. "." .. kStr)
+            else
+                emit(R(A) .. " = " .. R(B) .. "[" .. K(C) .. "]")
+            end
+        elseif opname == "SETTABLEKS" then
+            local kStr = self:KString(proto, C)
+            if kStr:match("^[%a_][%w_]*$") then
+                emit(R(B) .. "." .. kStr .. " = " .. R(A))
+            else
+                emit(R(B) .. "[" .. K(C) .. "] = " .. R(A))
+            end
+        elseif opname == "GETTABLEN" then
+            emit(R(A) .. " = " .. R(B) .. "[" .. (C + 1) .. "]")
+        elseif opname == "SETTABLEN" then
+            emit(R(B) .. "[" .. (C + 1) .. "] = " .. R(A))
+        elseif opname == "NEWCLOSURE" then
+            emit(R(A) .. " = function() --[[ closure " .. D .. " ]] end")
+        elseif opname == "NAMECALL" then
+            local method = self:KString(proto, C)
+            emit("-- " .. R(A) .. ", " .. R(A+1) .. " = " .. R(B) .. ", " .. R(B) .. "." .. method)
+            skipNext = true
+        elseif opname == "CALL" then
+            local nArgs = B - 1
+            local nRets = C - 1
+            
+            local args = {}
+            for j = 1, nArgs do
+                table.insert(args, R(A + j))
+            end
+            
+            local callStr = R(A) .. "(" .. table.concat(args, ", ") .. ")"
+            
+            if nRets == -1 then
+                emit(R(A) .. " = " .. callStr)
+            elseif nRets == 0 then
+                emit(callStr)
+            else
+                local rets = {}
+                for j = 0, nRets - 1 do
+                    table.insert(rets, R(A + j))
+                end
+                emit(table.concat(rets, ", ") .. " = " .. callStr)
+            end
+        elseif opname == "RETURN" then
+            if B == 0 then
+                emit("return ...")
+            elseif B == 1 then
+                emit("return")
+            else
+                local rets = {}
+                for j = 0, B - 2 do
+                    table.insert(rets, R(A + j))
+                end
+                emit("return " .. table.concat(rets, ", "))
+            end
+        elseif opname == "JUMP" then
+            emit("-- jump " .. sD)
+        elseif opname == "JUMPBACK" then
+            emit("-- jumpback " .. sD)
+        elseif opname == "JUMPIF" then
+            emit("if " .. R(A) .. " then")
+        elseif opname == "JUMPIFNOT" then
+            emit("if not " .. R(A) .. " then")
+        elseif opname == "JUMPIFEQ" then
+            local aux = proto.code[i + 1]
+            emit("if " .. R(A) .. " == " .. R(aux and bit32.band(aux, 0xFF) or 0) .. " then")
+            skipNext = true
+        elseif opname == "JUMPIFLE" then
+            local aux = proto.code[i + 1]
+            emit("if " .. R(A) .. " <= " .. R(aux and bit32.band(aux, 0xFF) or 0) .. " then")
+            skipNext = true
+        elseif opname == "JUMPIFLT" then
+            local aux = proto.code[i + 1]
+            emit("if " .. R(A) .. " < " .. R(aux and bit32.band(aux, 0xFF) or 0) .. " then")
+            skipNext = true
+        elseif opname == "JUMPIFNOTEQ" then
+            local aux = proto.code[i + 1]
+            emit("if " .. R(A) .. " ~= " .. R(aux and bit32.band(aux, 0xFF) or 0) .. " then")
+            skipNext = true
+        elseif opname == "ADD" then
+            emit(R(A) .. " = " .. R(B) .. " + " .. R(C))
+        elseif opname == "SUB" then
+            emit(R(A) .. " = " .. R(B) .. " - " .. R(C))
+        elseif opname == "MUL" then
+            emit(R(A) .. " = " .. R(B) .. " * " .. R(C))
+        elseif opname == "DIV" then
+            emit(R(A) .. " = " .. R(B) .. " / " .. R(C))
+        elseif opname == "MOD" then
+            emit(R(A) .. " = " .. R(B) .. " % " .. R(C))
+        elseif opname == "POW" then
+            emit(R(A) .. " = " .. R(B) .. " ^ " .. R(C))
+        elseif opname == "ADDK" then
+            emit(R(A) .. " = " .. R(B) .. " + " .. K(C))
+        elseif opname == "SUBK" then
+            emit(R(A) .. " = " .. R(B) .. " - " .. K(C))
+        elseif opname == "MULK" then
+            emit(R(A) .. " = " .. R(B) .. " * " .. K(C))
+        elseif opname == "DIVK" then
+            emit(R(A) .. " = " .. R(B) .. " / " .. K(C))
+        elseif opname == "CONCAT" then
+            local parts = {}
+            for j = B, C do
+                table.insert(parts, R(j))
+            end
+            emit(R(A) .. " = " .. table.concat(parts, " .. "))
+        elseif opname == "NOT" then
+            emit(R(A) .. " = not " .. R(B))
+        elseif opname == "MINUS" then
+            emit(R(A) .. " = -" .. R(B))
+        elseif opname == "LENGTH" then
+            emit(R(A) .. " = #" .. R(B))
+        elseif opname == "NEWTABLE" then
+            emit(R(A) .. " = {}")
+        elseif opname == "DUPTABLE" then
+            emit(R(A) .. " = {} -- duptable " .. D)
+        elseif opname == "SETLIST" then
+            emit("-- setlist " .. R(A) .. "[...] = ...")
+        elseif opname == "FORNPREP" then
+            emit("for " .. R(A + 3) .. " = " .. R(A) .. ", " .. R(A + 1) .. ", " .. R(A + 2) .. " do")
+            indent = indent + 1
+        elseif opname == "FORNLOOP" then
+            indent = math.max(0, indent - 1)
+            emit("end")
+        elseif opname == "FORGLOOP" then
+            indent = math.max(0, indent - 1)
+            emit("end")
+        elseif opname == "FORGPREP" or opname == "FORGPREP_NEXT" or opname == "FORGPREP_INEXT" then
+            emit("for ... in ... do")
+            indent = indent + 1
+        elseif opname == "GETVARARGS" then
+            if B == 0 then
+                emit(R(A) .. " = ...")
+            else
+                local vars = {}
+                for j = 0, B - 2 do
+                    table.insert(vars, R(A + j))
+                end
+                emit(table.concat(vars, ", ") .. " = ...")
+            end
+        elseif opname == "DUPCLOSURE" then
+            emit(R(A) .. " = function() end -- dupclosure " .. D)
+        elseif opname == "PREPVARARGS" then
+            -- Skip, already handled in function header
+        elseif opname == "LOADKX" then
+            local aux = proto.code[i + 1]
+            emit(R(A) .. " = " .. K(aux or 0))
+            skipNext = true
+        elseif opname == "FASTCALL" or opname == "FASTCALL1" or opname == "FASTCALL2" or opname == "FASTCALL2K" then
+            -- Skip, optimized call follows
+        elseif opname == "CAPTURE" then
+            -- Skip, closure capture
+        elseif opname == "COVERAGE" then
+            -- Skip, coverage tracking
+        else
+            emit("-- " .. opname .. " A=" .. A .. " B=" .. B .. " C=" .. C .. " D=" .. D)
+        end
+        
+        if skipNext then
+            i = i + 1
+        end
+        i = i + 1
+    end
+    
+    indent = math.max(0, indent - 1)
     emit("end")
-    return table.concat(out,"\n")
+    
+    return table.concat(out, "\n")
 end
 
 function Decompiler:Decompile(bytecode)
+    self.strings = {}
+    self.protos = {}
+    self.output = {}
+    
     local data, err = self:Parse(bytecode)
-    if not data then return "-- Error: "..tostring(err) end
-    
-    local header = "-- Luau Bytecode v"..data.v.."\n-- Custom Decompiler\n\n"
-    return header .. self:DecompileProto(data, data.main)
-end
-
--- ========================
--- OVERRIDE FONKSIYONLARI
--- ========================
-
-function DecompilerOverride:Enable()
-    -- decompile'ı override et
-    getgenv().decompile = function(scriptInstance)
-        -- Script kontrolü
-        if typeof(scriptInstance) ~= "Instance" then
-            return "-- Invalid argument: expected script instance"
-        end
-        
-        if not scriptInstance:IsA("LuaSourceContainer") then
-            return "-- Not a script"
-        end
-        
-        -- Bytecode al
-        local bytecode
-        if Originals.getscriptbytecode then
-            local ok, bc = pcall(Originals.getscriptbytecode, scriptInstance)
-            if ok then bytecode = bc end
-        end
-        
-        if not bytecode or #bytecode == 0 then
-            return "-- Cannot get bytecode\n-- Script: " .. scriptInstance:GetFullName()
-        end
-        
-        -- Kendi decompiler'ımızla decompile et
-        return Decompiler:Decompile(bytecode)
+    if not data then
+        return "-- Decompile Error: " .. tostring(err)
     end
     
-    print("[DecompilerOverride] Enabled - Using custom decompiler")
+    local header = string.format(
+        "-- Luau Bytecode v%d\n-- Custom Decompiler\n-- Protos: %d, Main: %d\n\n",
+        data.version,
+        data.protoCount,
+        data.mainProto
+    )
+    
+    local code = self:DecompileProto(data, data.mainProto)
+    
+    return header .. code
 end
 
-function DecompilerOverride:Disable()
-    -- Orijinale geri dön
-    getgenv().decompile = Originals.decompile
-    print("[DecompilerOverride] Disabled - Using original decompiler")
-end
+-- ========================
+-- EXPORT & OVERRIDE
+-- ========================
 
-function DecompilerOverride:Toggle()
-    if getgenv().decompile == Originals.decompile then
-        self:Enable()
-    else
-        self:Disable()
+local decompilerInstance = Decompiler.new()
+
+local originalDecompile = decompile
+
+getgenv().decompile = function(script)
+    if typeof(script) ~= "Instance" then
+        return "-- Error: Expected Instance"
     end
+    
+    if not script:IsA("LuaSourceContainer") then
+        return "-- Error: Not a script"
+    end
+    
+    local success, bytecode = pcall(getscriptbytecode, script)
+    if not success or not bytecode or #bytecode == 0 then
+        if originalDecompile then
+            return originalDecompile(script)
+        end
+        return "-- Error: Cannot get bytecode"
+    end
+    
+    return decompilerInstance:Decompile(bytecode)
 end
 
--- ========================
--- AUTO ENABLE
--- ========================
-DecompilerOverride:Enable()
+getgenv().customdecompile = function(bytecodeOrScript)
+    if typeof(bytecodeOrScript) == "Instance" then
+        local success, bytecode = pcall(getscriptbytecode, bytecodeOrScript)
+        if success and bytecode then
+            return decompilerInstance:Decompile(bytecode)
+        end
+        return "-- Cannot get bytecode"
+    elseif typeof(bytecodeOrScript) == "string" then
+        return decompilerInstance:Decompile(bytecodeOrScript)
+    end
+    return "-- Invalid input"
+end
 
-return DecompilerOverride
+print("✓ Custom Decompiler Loaded!")
+print("  Use: decompile(script) or customdecompile(bytecode)")
+
+return Decompiler
