@@ -1,639 +1,2827 @@
 --[[
-    Luau Decompiler - Fixed Version
+    ShadowLib - Modern Dark UI Library
+    Lucide Icons Destekli | Executor Uyumlu
+    
+    Kullanım:
+    local ShadowLib = loadstring(game:HttpGet("LINK"))()
+    local Window = ShadowLib:CreateWindow({...})
 ]]
 
-local BytecodeReader = {}
-BytecodeReader.__index = BytecodeReader
+local ShadowLib = {}
+ShadowLib.__index = ShadowLib
 
-function BytecodeReader.new(data)
-    return setmetatable({data = data, pos = 1, len = #data}, BytecodeReader)
-end
+-- Services
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
 
-function BytecodeReader:ReadByte()
-    if self.pos > self.len then return 0 end
-    local b = string.byte(self.data, self.pos)
-    self.pos = self.pos + 1
-    return b or 0
-end
+local Player = Players.LocalPlayer
+local Mouse = Player:GetMouse()
 
-function BytecodeReader:ReadUInt32()
-    local a = self:ReadByte()
-    local b = self:ReadByte()
-    local c = self:ReadByte()
-    local d = self:ReadByte()
-    return a + (b * 256) + (c * 65536) + (d * 16777216)
-end
-
-function BytecodeReader:ReadVarInt()
-    local result, shift = 0, 0
-    repeat
-        local byte = self:ReadByte()
-        result = result + bit32.lshift(bit32.band(byte, 0x7F), shift)
-        shift = shift + 7
-    until bit32.band(byte, 0x80) == 0
-    return result
-end
-
-function BytecodeReader:ReadString()
-    local len = self:ReadVarInt()
-    if len == 0 then return "" end
-    local str = self.data:sub(self.pos, self.pos + len - 1)
-    self.pos = self.pos + len
-    return str
-end
-
-function BytecodeReader:ReadDouble()
-    local bytes = {}
-    for i = 1, 8 do bytes[i] = self:ReadByte() end
+-- Config
+local CONFIG = {
+    MainColor = Color3.fromRGB(15, 15, 20),
+    SecondaryColor = Color3.fromRGB(22, 22, 30),
+    AccentColor = Color3.fromRGB(88, 101, 242), -- Discord mavisi
+    TextColor = Color3.fromRGB(255, 255, 255),
+    SubTextColor = Color3.fromRGB(150, 150, 160),
+    BorderColor = Color3.fromRGB(40, 40, 50),
+    SuccessColor = Color3.fromRGB(67, 181, 129),
+    ErrorColor = Color3.fromRGB(240, 71, 71),
+    WarningColor = Color3.fromRGB(250, 166, 26),
     
-    local sign = bit32.rshift(bytes[8], 7)
-    local exp = bit32.lshift(bit32.band(bytes[8], 0x7F), 4) + bit32.rshift(bytes[7], 4)
+    Font = Enum.Font.GothamMedium,
+    TitleFont = Enum.Font.GothamBold,
     
-    if exp == 0 then return 0 end
-    if exp == 2047 then return 0/0 end
-    
-    local mantissa = bit32.band(bytes[7], 0x0F)
-    for i = 6, 1, -1 do
-        mantissa = mantissa * 256 + bytes[i]
-    end
-    
-    local val = (1 + mantissa / 4503599627370496) * (2 ^ (exp - 1023))
-    return sign == 1 and -val or val
-end
-
-function BytecodeReader:Skip(n)
-    self.pos = self.pos + n
-end
-
--- Opcodes
-local OP = {
-    [0]="NOP",[1]="BREAK",[2]="LOADNIL",[3]="LOADB",[4]="LOADN",[5]="LOADK",
-    [6]="MOVE",[7]="GETGLOBAL",[8]="SETGLOBAL",[9]="GETUPVAL",[10]="SETUPVAL",
-    [11]="CLOSEUPVALS",[12]="GETIMPORT",[13]="GETTABLE",[14]="SETTABLE",
-    [15]="GETTABLEKS",[16]="SETTABLEKS",[17]="GETTABLEN",[18]="SETTABLEN",
-    [19]="NEWCLOSURE",[20]="NAMECALL",[21]="CALL",[22]="RETURN",
-    [23]="JUMP",[24]="JUMPBACK",[25]="JUMPIF",[26]="JUMPIFNOT",
-    [27]="JUMPIFEQ",[28]="JUMPIFLE",[29]="JUMPIFLT",[30]="JUMPIFNOTEQ",
-    [31]="JUMPIFNOTLE",[32]="JUMPIFNOTLT",[33]="ADD",[34]="SUB",
-    [35]="MUL",[36]="DIV",[37]="MOD",[38]="POW",[39]="ADDK",[40]="SUBK",
-    [41]="MULK",[42]="DIVK",[43]="MODK",[44]="POWK",[45]="AND",[46]="OR",
-    [47]="ANDK",[48]="ORK",[49]="CONCAT",[50]="NOT",[51]="MINUS",
-    [52]="LENGTH",[53]="NEWTABLE",[54]="DUPTABLE",[55]="SETLIST",
-    [56]="FORNPREP",[57]="FORNLOOP",[58]="FORGLOOP",[59]="FORGPREP_INEXT",
-    [60]="FORGLOOP_INEXT",[61]="FORGPREP_NEXT",[62]="FORGLOOP_NEXT",
-    [63]="GETVARARGS",[64]="DUPCLOSURE",[65]="PREPVARARGS",[66]="LOADKX",
-    [67]="JUMPX",[68]="FASTCALL",[69]="COVERAGE",[70]="CAPTURE",
-    [71]="JUMPIFEQK",[72]="JUMPIFNOTEQK",[73]="FASTCALL1",[74]="FASTCALL2",
-    [75]="FASTCALL2K",[76]="FORGPREP",[77]="JUMPXEQKNIL",[78]="JUMPXEQKB",
-    [79]="JUMPXEQKN",[80]="JUMPXEQKS",
+    TweenSpeed = 0.2,
+    CornerRadius = 8,
 }
 
-local Decompiler = {}
-Decompiler.__index = Decompiler
+-- Lucide Icons (Base64 encoded SVG -> ImageId mapping)
+local LucideIcons = {
+    ["home"] = "rbxassetid://7733658504",
+    ["settings"] = "rbxassetid://7734053495",
+    ["user"] = "rbxassetid://7733717504",
+    ["search"] = "rbxassetid://7734053495",
+    ["menu"] = "rbxassetid://7734042083",
+    ["x"] = "rbxassetid://7734042083",
+    ["check"] = "rbxassetid://7733715400",
+    ["chevron-down"] = "rbxassetid://7734013944",
+    ["chevron-right"] = "rbxassetid://7734013944",
+    ["bell"] = "rbxassetid://7733658133",
+    ["star"] = "rbxassetid://7734053495",
+    ["heart"] = "rbxassetid://7733964370",
+    ["play"] = "rbxassetid://7733988690",
+    ["pause"] = "rbxassetid://7733986498",
+    ["volume"] = "rbxassetid://7734053495",
+    ["eye"] = "rbxassetid://7733908270",
+    ["eye-off"] = "rbxassetid://7733908044",
+    ["lock"] = "rbxassetid://7734031715",
+    ["unlock"] = "rbxassetid://7734053495",
+    ["trash"] = "rbxassetid://7734053495",
+    ["edit"] = "rbxassetid://7733885498",
+    ["copy"] = "rbxassetid://7733780364",
+    ["download"] = "rbxassetid://7733867138",
+    ["upload"] = "rbxassetid://7734053495",
+    ["folder"] = "rbxassetid://7733920498",
+    ["file"] = "rbxassetid://7733911814",
+    ["image"] = "rbxassetid://7733970745",
+    ["code"] = "rbxassetid://7733762255",
+    ["terminal"] = "rbxassetid://7734053495",
+    ["zap"] = "rbxassetid://7734068612",
+    ["shield"] = "rbxassetid://7734042465",
+    ["target"] = "rbxassetid://7734053495",
+    ["crosshair"] = "rbxassetid://7733792483",
+    ["globe"] = "rbxassetid://7733942104",
+    ["wifi"] = "rbxassetid://7734061498",
+    ["bluetooth"] = "rbxassetid://7733671066",
+    ["cpu"] = "rbxassetid://7733792483",
+    ["database"] = "rbxassetid://7733825625",
+    ["server"] = "rbxassetid://7734038668",
+    ["cloud"] = "rbxassetid://7733754754",
+    ["moon"] = "rbxassetid://7733964370",
+    ["sun"] = "rbxassetid://7734053495",
+    ["palette"] = "rbxassetid://7733986498",
+    ["sliders"] = "rbxassetid://7734047533",
+    ["toggle-left"] = "rbxassetid://7734053495",
+    ["toggle-right"] = "rbxassetid://7734053495",
+    ["key"] = "rbxassetid://7733999068",
+    ["gamepad"] = "rbxassetid://7733930710",
+    ["mouse-pointer"] = "rbxassetid://7733964370",
+    ["move"] = "rbxassetid://7733964370",
+    ["maximize"] = "rbxassetid://7733964370",
+    ["minimize"] = "rbxassetid://7733964370",
+    ["refresh"] = "rbxassetid://7734020434",
+    ["rotate"] = "rbxassetid://7734020434",
+    ["save"] = "rbxassetid://7734031270",
+    ["share"] = "rbxassetid://7734038668",
+    ["send"] = "rbxassetid://7734035820",
+    ["inbox"] = "rbxassetid://7733970745",
+    ["mail"] = "rbxassetid://7733964370",
+    ["message"] = "rbxassetid://7733964370",
+    ["phone"] = "rbxassetid://7733986498",
+    ["video"] = "rbxassetid://7734058668",
+    ["camera"] = "rbxassetid://7733725645",
+    ["mic"] = "rbxassetid://7733964370",
+    ["headphones"] = "rbxassetid://7733958175",
+    ["speaker"] = "rbxassetid://7734050585",
+    ["radio"] = "rbxassetid://7734014780",
+    ["tv"] = "rbxassetid://7734053495",
+    ["monitor"] = "rbxassetid://7733964370",
+    ["smartphone"] = "rbxassetid://7734047533",
+    ["tablet"] = "rbxassetid://7734053495",
+    ["watch"] = "rbxassetid://7734058668",
+    ["clock"] = "rbxassetid://7733754754",
+    ["calendar"] = "rbxassetid://7733718968",
+    ["alarm"] = "rbxassetid://7733629641",
+    ["timer"] = "rbxassetid://7734053495",
+    ["stopwatch"] = "rbxassetid://7734050585",
+    ["hourglass"] = "rbxassetid://7733970745",
+    ["loader"] = "rbxassetid://7734024268",
+    ["activity"] = "rbxassetid://7733622171",
+    ["pulse"] = "rbxassetid://7734003963",
+    ["trending-up"] = "rbxassetid://7734053495",
+    ["trending-down"] = "rbxassetid://7734053495",
+    ["bar-chart"] = "rbxassetid://7733651269",
+    ["pie-chart"] = "rbxassetid://7733986498",
+}
 
-function Decompiler.new()
-    return setmetatable({
-        strings = {},
-        protos = {},
-        output = {},
-    }, Decompiler)
+-- Utility Functions
+local Utility = {}
+
+function Utility.Create(class, properties)
+    local instance = Instance.new(class)
+    for property, value in pairs(properties) do
+        if property ~= "Parent" then
+            instance[property] = value
+        end
+    end
+    if properties.Parent then
+        instance.Parent = properties.Parent
+    end
+    return instance
 end
 
-function Decompiler:Parse(bytecode)
-    if not bytecode or #bytecode < 2 then
-        return nil, "Invalid bytecode"
-    end
-    
-    local r = BytecodeReader.new(bytecode)
-    
-    -- Version
-    local version = r:ReadByte()
-    if version == 0 then
-        -- Error message follows
-        local errLen = r:ReadVarInt()
-        local errMsg = bytecode:sub(r.pos, r.pos + errLen - 1)
-        return nil, "Bytecode error: " .. errMsg
-    end
-    
-    if version < 3 or version > 6 then
-        return nil, "Unsupported bytecode version: " .. version
-    end
-    
-    -- Types version (v6+)
-    local typesVersion = 0
-    if version >= 4 then
-        typesVersion = r:ReadByte()
-    end
-    
-    -- Strings
-    local stringCount = r:ReadVarInt()
-    self.strings = {}
-    for i = 1, stringCount do
-        self.strings[i] = r:ReadString()
-    end
-    
-    -- Protos
-    local protoCount = r:ReadVarInt()
-    self.protos = {}
-    
-    for i = 1, protoCount do
-        local proto = {}
-        
-        proto.maxStack = r:ReadByte()
-        proto.numParams = r:ReadByte()
-        proto.numUpvalues = r:ReadByte()
-        proto.isVararg = r:ReadByte()
-        
-        -- Flags (v6+)
-        if version >= 4 then
-            proto.flags = r:ReadByte()
-            local typeSize = r:ReadVarInt()
-            r:Skip(typeSize)
-        end
-        
-        -- Code
-        local codeSize = r:ReadVarInt()
-        proto.code = {}
-        for j = 1, codeSize do
-            proto.code[j] = r:ReadUInt32()
-        end
-        
-        -- Constants
-        local constSize = r:ReadVarInt()
-        proto.constants = {}
-        for j = 1, constSize do
-            local kType = r:ReadByte()
-            
-            if kType == 0 then
-                proto.constants[j] = {t = "nil", v = nil}
-            elseif kType == 1 then
-                proto.constants[j] = {t = "bool", v = r:ReadByte() ~= 0}
-            elseif kType == 2 then
-                proto.constants[j] = {t = "number", v = r:ReadDouble()}
-            elseif kType == 3 then
-                local idx = r:ReadVarInt()
-                proto.constants[j] = {t = "string", v = self.strings[idx] or ""}
-            elseif kType == 4 then
-                proto.constants[j] = {t = "import", v = r:ReadUInt32()}
-            elseif kType == 5 then
-                local len = r:ReadVarInt()
-                local keys = {}
-                for k = 1, len do
-                    keys[k] = r:ReadVarInt()
-                end
-                proto.constants[j] = {t = "table", v = keys}
-            elseif kType == 6 then
-                proto.constants[j] = {t = "closure", v = r:ReadVarInt()}
-            else
-                proto.constants[j] = {t = "unknown", v = nil}
-            end
-        end
-        
-        -- Child protos
-        local childCount = r:ReadVarInt()
-        proto.children = {}
-        for j = 1, childCount do
-            proto.children[j] = r:ReadVarInt()
-        end
-        
-        -- Debug info
-        proto.lineDefined = r:ReadVarInt()
-        local debugNameIdx = r:ReadVarInt()
-        proto.debugName = self.strings[debugNameIdx] or ("func_" .. i)
-        
-        -- Line info (skip)
-        local hasLineInfo = r:ReadByte()
-        if hasLineInfo ~= 0 then
-            local intervals = math.floor((codeSize - 1) / 4) + 1
-            r:Skip(codeSize) -- lineinfo
-            r:Skip(intervals * 4) -- abslineinfo
-        end
-        
-        -- Debug locals (skip)
-        local hasDebugInfo = r:ReadByte()
-        if hasDebugInfo ~= 0 then
-            local sizeLocals = r:ReadVarInt()
-            for j = 1, sizeLocals do
-                r:ReadVarInt() -- name
-                r:ReadVarInt() -- startpc
-                r:ReadVarInt() -- endpc
-                r:ReadByte()   -- reg
-            end
-            local sizeUpvalues = r:ReadVarInt()
-            for j = 1, sizeUpvalues do
-                r:ReadVarInt() -- name
-            end
-        end
-        
-        self.protos[i] = proto
-    end
-    
-    -- Main proto index
-    local mainProto = r:ReadVarInt()
-    
-    return {
-        version = version,
-        typesVersion = typesVersion,
-        mainProto = mainProto,
-        protoCount = protoCount
-    }
-end
-
-function Decompiler:K(proto, idx)
-    local k = proto.constants[idx + 1]
-    if not k then return "nil" end
-    
-    if k.t == "nil" then
-        return "nil"
-    elseif k.t == "bool" then
-        return tostring(k.v)
-    elseif k.t == "number" then
-        local v = k.v
-        if v == math.floor(v) and v >= -2147483648 and v <= 2147483647 then
-            return tostring(math.floor(v))
-        end
-        return tostring(v)
-    elseif k.t == "string" then
-        -- Escape string properly
-        local s = k.v
-        s = s:gsub("\\", "\\\\")
-        s = s:gsub("\"", "\\\"")
-        s = s:gsub("\n", "\\n")
-        s = s:gsub("\r", "\\r")
-        s = s:gsub("\t", "\\t")
-        return '"' .. s .. '"'
-    else
-        return "nil"
-    end
-end
-
-function Decompiler:KString(proto, idx)
-    local k = proto.constants[idx + 1]
-    if k and k.t == "string" then
-        return k.v
-    end
-    return "unknown"
-end
-
-function Decompiler:DecompileProto(data, pIdx)
-    -- FIX: Proper index handling
-    local proto
-    
-    -- Try direct index first (0-based from bytecode)
-    if pIdx and self.protos[pIdx + 1] then
-        proto = self.protos[pIdx + 1]
-    -- Fallback to first proto
-    elseif self.protos[1] then
-        proto = self.protos[1]
-        pIdx = 0
-    else
-        return "-- Error: No protos found in bytecode"
-    end
-    
-    local out = {}
-    local indent = 0
-    
-    local function emit(s)
-        table.insert(out, string.rep("    ", indent) .. s)
-    end
-    
-    local function R(n)
-        return "v" .. n
-    end
-    
-    local function K(n)
-        return self:K(proto, n)
-    end
-    
-    -- Function header
-    local params = {}
-    for i = 0, proto.numParams - 1 do
-        table.insert(params, "a" .. i)
-    end
-    if proto.isVararg and proto.isVararg > 0 then
-        table.insert(params, "...")
-    end
-    
-    local funcName = proto.debugName or "main"
-    if pIdx == data.mainProto then
-        funcName = "main"
-    end
-    
-    emit("function " .. funcName .. "(" .. table.concat(params, ", ") .. ")")
-    indent = indent + 1
-    
-    -- Decompile instructions
-    local i = 1
-    local codeLen = #proto.code
-    
-    while i <= codeLen do
-        local inst = proto.code[i]
-        local op = bit32.band(inst, 0xFF)
-        local A = bit32.band(bit32.rshift(inst, 8), 0xFF)
-        local B = bit32.band(bit32.rshift(inst, 16), 0xFF)
-        local C = bit32.band(bit32.rshift(inst, 24), 0xFF)
-        local D = bit32.band(bit32.rshift(inst, 16), 0xFFFF)
-        local sD = D > 32767 and D - 65536 or D
-        
-        local opname = OP[op] or "UNKNOWN_" .. op
-        local skipNext = false
-        
-        -- Handle each opcode
-        if opname == "NOP" or opname == "BREAK" then
-            -- Skip
-        elseif opname == "LOADNIL" then
-            emit(R(A) .. " = nil")
-        elseif opname == "LOADB" then
-            emit(R(A) .. " = " .. (B == 1 and "true" or "false"))
-            if C ~= 0 then
-                -- Skip next instruction
-            end
-        elseif opname == "LOADN" then
-            emit(R(A) .. " = " .. sD)
-        elseif opname == "LOADK" then
-            emit(R(A) .. " = " .. K(D))
-        elseif opname == "MOVE" then
-            emit(R(A) .. " = " .. R(B))
-        elseif opname == "GETGLOBAL" then
-            local aux = proto.code[i + 1]
-            if aux then
-                local kIdx = bit32.band(aux, 0xFFFFFF)
-                emit(R(A) .. " = " .. self:KString(proto, kIdx))
-            else
-                emit(R(A) .. " = _G[?]")
-            end
-            skipNext = true
-        elseif opname == "SETGLOBAL" then
-            local aux = proto.code[i + 1]
-            if aux then
-                local kIdx = bit32.band(aux, 0xFFFFFF)
-                emit(self:KString(proto, kIdx) .. " = " .. R(A))
-            else
-                emit("_G[?] = " .. R(A))
-            end
-            skipNext = true
-        elseif opname == "GETUPVAL" then
-            emit(R(A) .. " = upval_" .. B)
-        elseif opname == "SETUPVAL" then
-            emit("upval_" .. B .. " = " .. R(A))
-        elseif opname == "GETIMPORT" then
-            local aux = proto.code[i + 1]
-            if aux then
-                -- Decode import
-                local count = bit32.rshift(aux, 30)
-                local id0 = bit32.band(bit32.rshift(aux, 20), 0x3FF)
-                local id1 = bit32.band(bit32.rshift(aux, 10), 0x3FF)
-                local id2 = bit32.band(aux, 0x3FF)
-                
-                local path = self.strings[id0] or "?"
-                if count >= 2 then path = path .. "." .. (self.strings[id1] or "?") end
-                if count >= 3 then path = path .. "." .. (self.strings[id2] or "?") end
-                
-                emit(R(A) .. " = " .. path)
-            else
-                emit(R(A) .. " = import(?)")
-            end
-            skipNext = true
-        elseif opname == "GETTABLE" then
-            emit(R(A) .. " = " .. R(B) .. "[" .. R(C) .. "]")
-        elseif opname == "SETTABLE" then
-            emit(R(B) .. "[" .. R(C) .. "] = " .. R(A))
-        elseif opname == "GETTABLEKS" then
-            local kStr = self:KString(proto, C)
-            if kStr:match("^[%a_][%w_]*$") then
-                emit(R(A) .. " = " .. R(B) .. "." .. kStr)
-            else
-                emit(R(A) .. " = " .. R(B) .. "[" .. K(C) .. "]")
-            end
-        elseif opname == "SETTABLEKS" then
-            local kStr = self:KString(proto, C)
-            if kStr:match("^[%a_][%w_]*$") then
-                emit(R(B) .. "." .. kStr .. " = " .. R(A))
-            else
-                emit(R(B) .. "[" .. K(C) .. "] = " .. R(A))
-            end
-        elseif opname == "GETTABLEN" then
-            emit(R(A) .. " = " .. R(B) .. "[" .. (C + 1) .. "]")
-        elseif opname == "SETTABLEN" then
-            emit(R(B) .. "[" .. (C + 1) .. "] = " .. R(A))
-        elseif opname == "NEWCLOSURE" then
-            emit(R(A) .. " = function() --[[ closure " .. D .. " ]] end")
-        elseif opname == "NAMECALL" then
-            local method = self:KString(proto, C)
-            emit("-- " .. R(A) .. ", " .. R(A+1) .. " = " .. R(B) .. ", " .. R(B) .. "." .. method)
-            skipNext = true
-        elseif opname == "CALL" then
-            local nArgs = B - 1
-            local nRets = C - 1
-            
-            local args = {}
-            for j = 1, nArgs do
-                table.insert(args, R(A + j))
-            end
-            
-            local callStr = R(A) .. "(" .. table.concat(args, ", ") .. ")"
-            
-            if nRets == -1 then
-                emit(R(A) .. " = " .. callStr)
-            elseif nRets == 0 then
-                emit(callStr)
-            else
-                local rets = {}
-                for j = 0, nRets - 1 do
-                    table.insert(rets, R(A + j))
-                end
-                emit(table.concat(rets, ", ") .. " = " .. callStr)
-            end
-        elseif opname == "RETURN" then
-            if B == 0 then
-                emit("return ...")
-            elseif B == 1 then
-                emit("return")
-            else
-                local rets = {}
-                for j = 0, B - 2 do
-                    table.insert(rets, R(A + j))
-                end
-                emit("return " .. table.concat(rets, ", "))
-            end
-        elseif opname == "JUMP" then
-            emit("-- jump " .. sD)
-        elseif opname == "JUMPBACK" then
-            emit("-- jumpback " .. sD)
-        elseif opname == "JUMPIF" then
-            emit("if " .. R(A) .. " then")
-        elseif opname == "JUMPIFNOT" then
-            emit("if not " .. R(A) .. " then")
-        elseif opname == "JUMPIFEQ" then
-            local aux = proto.code[i + 1]
-            emit("if " .. R(A) .. " == " .. R(aux and bit32.band(aux, 0xFF) or 0) .. " then")
-            skipNext = true
-        elseif opname == "JUMPIFLE" then
-            local aux = proto.code[i + 1]
-            emit("if " .. R(A) .. " <= " .. R(aux and bit32.band(aux, 0xFF) or 0) .. " then")
-            skipNext = true
-        elseif opname == "JUMPIFLT" then
-            local aux = proto.code[i + 1]
-            emit("if " .. R(A) .. " < " .. R(aux and bit32.band(aux, 0xFF) or 0) .. " then")
-            skipNext = true
-        elseif opname == "JUMPIFNOTEQ" then
-            local aux = proto.code[i + 1]
-            emit("if " .. R(A) .. " ~= " .. R(aux and bit32.band(aux, 0xFF) or 0) .. " then")
-            skipNext = true
-        elseif opname == "ADD" then
-            emit(R(A) .. " = " .. R(B) .. " + " .. R(C))
-        elseif opname == "SUB" then
-            emit(R(A) .. " = " .. R(B) .. " - " .. R(C))
-        elseif opname == "MUL" then
-            emit(R(A) .. " = " .. R(B) .. " * " .. R(C))
-        elseif opname == "DIV" then
-            emit(R(A) .. " = " .. R(B) .. " / " .. R(C))
-        elseif opname == "MOD" then
-            emit(R(A) .. " = " .. R(B) .. " % " .. R(C))
-        elseif opname == "POW" then
-            emit(R(A) .. " = " .. R(B) .. " ^ " .. R(C))
-        elseif opname == "ADDK" then
-            emit(R(A) .. " = " .. R(B) .. " + " .. K(C))
-        elseif opname == "SUBK" then
-            emit(R(A) .. " = " .. R(B) .. " - " .. K(C))
-        elseif opname == "MULK" then
-            emit(R(A) .. " = " .. R(B) .. " * " .. K(C))
-        elseif opname == "DIVK" then
-            emit(R(A) .. " = " .. R(B) .. " / " .. K(C))
-        elseif opname == "CONCAT" then
-            local parts = {}
-            for j = B, C do
-                table.insert(parts, R(j))
-            end
-            emit(R(A) .. " = " .. table.concat(parts, " .. "))
-        elseif opname == "NOT" then
-            emit(R(A) .. " = not " .. R(B))
-        elseif opname == "MINUS" then
-            emit(R(A) .. " = -" .. R(B))
-        elseif opname == "LENGTH" then
-            emit(R(A) .. " = #" .. R(B))
-        elseif opname == "NEWTABLE" then
-            emit(R(A) .. " = {}")
-        elseif opname == "DUPTABLE" then
-            emit(R(A) .. " = {} -- duptable " .. D)
-        elseif opname == "SETLIST" then
-            emit("-- setlist " .. R(A) .. "[...] = ...")
-        elseif opname == "FORNPREP" then
-            emit("for " .. R(A + 3) .. " = " .. R(A) .. ", " .. R(A + 1) .. ", " .. R(A + 2) .. " do")
-            indent = indent + 1
-        elseif opname == "FORNLOOP" then
-            indent = math.max(0, indent - 1)
-            emit("end")
-        elseif opname == "FORGLOOP" then
-            indent = math.max(0, indent - 1)
-            emit("end")
-        elseif opname == "FORGPREP" or opname == "FORGPREP_NEXT" or opname == "FORGPREP_INEXT" then
-            emit("for ... in ... do")
-            indent = indent + 1
-        elseif opname == "GETVARARGS" then
-            if B == 0 then
-                emit(R(A) .. " = ...")
-            else
-                local vars = {}
-                for j = 0, B - 2 do
-                    table.insert(vars, R(A + j))
-                end
-                emit(table.concat(vars, ", ") .. " = ...")
-            end
-        elseif opname == "DUPCLOSURE" then
-            emit(R(A) .. " = function() end -- dupclosure " .. D)
-        elseif opname == "PREPVARARGS" then
-            -- Skip, already handled in function header
-        elseif opname == "LOADKX" then
-            local aux = proto.code[i + 1]
-            emit(R(A) .. " = " .. K(aux or 0))
-            skipNext = true
-        elseif opname == "FASTCALL" or opname == "FASTCALL1" or opname == "FASTCALL2" or opname == "FASTCALL2K" then
-            -- Skip, optimized call follows
-        elseif opname == "CAPTURE" then
-            -- Skip, closure capture
-        elseif opname == "COVERAGE" then
-            -- Skip, coverage tracking
-        else
-            emit("-- " .. opname .. " A=" .. A .. " B=" .. B .. " C=" .. C .. " D=" .. D)
-        end
-        
-        if skipNext then
-            i = i + 1
-        end
-        i = i + 1
-    end
-    
-    indent = math.max(0, indent - 1)
-    emit("end")
-    
-    return table.concat(out, "\n")
-end
-
-function Decompiler:Decompile(bytecode)
-    self.strings = {}
-    self.protos = {}
-    self.output = {}
-    
-    local data, err = self:Parse(bytecode)
-    if not data then
-        return "-- Decompile Error: " .. tostring(err)
-    end
-    
-    local header = string.format(
-        "-- Luau Bytecode v%d\n-- Custom Decompiler\n-- Protos: %d, Main: %d\n\n",
-        data.version,
-        data.protoCount,
-        data.mainProto
+function Utility.Tween(instance, properties, duration, easingStyle, easingDirection)
+    local tween = TweenService:Create(
+        instance,
+        TweenInfo.new(
+            duration or CONFIG.TweenSpeed,
+            easingStyle or Enum.EasingStyle.Quart,
+            easingDirection or Enum.EasingDirection.Out
+        ),
+        properties
     )
-    
-    local code = self:DecompileProto(data, data.mainProto)
-    
-    return header .. code
+    tween:Play()
+    return tween
 end
 
--- ========================
--- EXPORT & OVERRIDE
--- ========================
+function Utility.AddCorner(parent, radius)
+    return Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, radius or CONFIG.CornerRadius),
+        Parent = parent
+    })
+end
 
-local decompilerInstance = Decompiler.new()
+function Utility.AddStroke(parent, color, thickness)
+    return Utility.Create("UIStroke", {
+        Color = color or CONFIG.BorderColor,
+        Thickness = thickness or 1,
+        Parent = parent
+    })
+end
 
-local originalDecompile = decompile
+function Utility.AddPadding(parent, padding)
+    return Utility.Create("UIPadding", {
+        PaddingTop = UDim.new(0, padding),
+        PaddingBottom = UDim.new(0, padding),
+        PaddingLeft = UDim.new(0, padding),
+        PaddingRight = UDim.new(0, padding),
+        Parent = parent
+    })
+end
 
-getgenv().decompile = function(script)
-    if typeof(script) ~= "Instance" then
-        return "-- Error: Expected Instance"
-    end
+function Utility.Ripple(button, x, y)
+    local ripple = Utility.Create("Frame", {
+        Name = "Ripple",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BackgroundTransparency = 0.7,
+        Position = UDim2.new(0, x, 0, y),
+        Size = UDim2.new(0, 0, 0, 0),
+        ZIndex = 10,
+        Parent = button
+    })
     
-    if not script:IsA("LuaSourceContainer") then
-        return "-- Error: Not a script"
-    end
+    Utility.AddCorner(ripple, 100)
     
-    local success, bytecode = pcall(getscriptbytecode, script)
-    if not success or not bytecode or #bytecode == 0 then
-        if originalDecompile then
-            return originalDecompile(script)
+    local maxSize = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 2
+    
+    Utility.Tween(ripple, {
+        Size = UDim2.new(0, maxSize, 0, maxSize),
+        BackgroundTransparency = 1
+    }, 0.5)
+    
+    task.delay(0.5, function()
+        ripple:Destroy()
+    end)
+end
+
+function Utility.GetIcon(name)
+    return LucideIcons[name] or LucideIcons["star"]
+end
+
+-- Dragging System
+function Utility.MakeDraggable(frame, handle)
+    handle = handle or frame
+    local dragging, dragInput, dragStart, startPos
+    
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
         end
-        return "-- Error: Cannot get bytecode"
+    end)
+    
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            Utility.Tween(frame, {
+                Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            }, 0.05)
+        end
+    end)
+end
+
+-- Store references
+ShadowLib.Windows = {}
+ShadowLib.Config = CONFIG
+ShadowLib.Utility = Utility
+ShadowLib.Icons = LucideIcons
+
+print("[ShadowLib] Part 1 Loaded - Core & Setup ✓")
+
+--[[
+    ShadowLib - Part 2
+    Window & Tab System
+]]
+
+-- Main ScreenGui Creator
+function ShadowLib:CreateWindow(options)
+    options = options or {}
+    local windowTitle = options.Title or "ShadowLib"
+    local windowSize = options.Size or UDim2.new(0, 550, 0, 380)
+    local windowIcon = options.Icon or "zap"
+    local accentColor = options.AccentColor or CONFIG.AccentColor
+    
+    -- Update accent if provided
+    CONFIG.AccentColor = accentColor
+    
+    -- Create ScreenGui
+    local ScreenGui = Utility.Create("ScreenGui", {
+        Name = "ShadowLib_" .. HttpService:GenerateGUID(false),
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    })
+    
+    -- Parent to CoreGui or PlayerGui (Executor support)
+    local success, err = pcall(function()
+        ScreenGui.Parent = CoreGui
+    end)
+    if not success then
+        ScreenGui.Parent = Player:WaitForChild("PlayerGui")
     end
     
-    return decompilerInstance:Decompile(bytecode)
-end
-
-getgenv().customdecompile = function(bytecodeOrScript)
-    if typeof(bytecodeOrScript) == "Instance" then
-        local success, bytecode = pcall(getscriptbytecode, bytecodeOrScript)
-        if success and bytecode then
-            return decompilerInstance:Decompile(bytecode)
+    -- Main Window Frame
+    local MainFrame = Utility.Create("Frame", {
+        Name = "MainFrame",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = CONFIG.MainColor,
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = windowSize,
+        ClipsDescendants = true,
+        Parent = ScreenGui
+    })
+    Utility.AddCorner(MainFrame, 10)
+    Utility.AddStroke(MainFrame, CONFIG.BorderColor, 1)
+    
+    -- Drop Shadow
+    local Shadow = Utility.Create("ImageLabel", {
+        Name = "Shadow",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0.5, 0, 0.5, 4),
+        Size = UDim2.new(1, 30, 1, 30),
+        ZIndex = -1,
+        Image = "rbxassetid://5554236805",
+        ImageColor3 = Color3.fromRGB(0, 0, 0),
+        ImageTransparency = 0.5,
+        ScaleType = Enum.ScaleType.Slice,
+        SliceCenter = Rect.new(23, 23, 277, 277),
+        Parent = MainFrame
+    })
+    
+    -- Title Bar
+    local TitleBar = Utility.Create("Frame", {
+        Name = "TitleBar",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 40),
+        Parent = MainFrame
+    })
+    Utility.AddCorner(TitleBar, 10)
+    
+    -- Fix bottom corners of titlebar
+    local TitleBarFix = Utility.Create("Frame", {
+        Name = "Fix",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        BorderSizePixel = 0,
+        Position = UDim2.new(0, 0, 1, -10),
+        Size = UDim2.new(1, 0, 0, 10),
+        Parent = TitleBar
+    })
+    
+    -- Title Icon
+    local TitleIcon = Utility.Create("ImageLabel", {
+        Name = "Icon",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 0.5, 0),
+        AnchorPoint = Vector2.new(0, 0.5),
+        Size = UDim2.new(0, 18, 0, 18),
+        Image = Utility.GetIcon(windowIcon),
+        ImageColor3 = CONFIG.AccentColor,
+        Parent = TitleBar
+    })
+    
+    -- Title Text
+    local TitleText = Utility.Create("TextLabel", {
+        Name = "Title",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 38, 0, 0),
+        Size = UDim2.new(0.5, 0, 1, 0),
+        Font = CONFIG.TitleFont,
+        Text = windowTitle,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = TitleBar
+    })
+    
+    -- Window Controls Container
+    local ControlsContainer = Utility.Create("Frame", {
+        Name = "Controls",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, -80, 0, 0),
+        Size = UDim2.new(0, 75, 1, 0),
+        Parent = TitleBar
+    })
+    
+    local ControlsLayout = Utility.Create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalAlignment = Enum.HorizontalAlignment.Right,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+        Padding = UDim.new(0, 5),
+        Parent = ControlsContainer
+    })
+    
+    -- Minimize Button
+    local MinimizeBtn = Utility.Create("TextButton", {
+        Name = "Minimize",
+        BackgroundColor3 = CONFIG.BorderColor,
+        Size = UDim2.new(0, 30, 0, 26),
+        Font = Enum.Font.GothamBold,
+        Text = "—",
+        TextColor3 = CONFIG.SubTextColor,
+        TextSize = 12,
+        Parent = ControlsContainer
+    })
+    Utility.AddCorner(MinimizeBtn, 6)
+    
+    -- Close Button
+    local CloseBtn = Utility.Create("TextButton", {
+        Name = "Close",
+        BackgroundColor3 = CONFIG.ErrorColor,
+        Size = UDim2.new(0, 30, 0, 26),
+        Font = Enum.Font.GothamBold,
+        Text = "×",
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 16,
+        Parent = ControlsContainer
+    })
+    Utility.AddCorner(CloseBtn, 6)
+    
+    -- Content Container
+    local ContentContainer = Utility.Create("Frame", {
+        Name = "Content",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 0, 0, 40),
+        Size = UDim2.new(1, 0, 1, -40),
+        Parent = MainFrame
+    })
+    
+    -- Sidebar (Tab Navigation)
+    local Sidebar = Utility.Create("Frame", {
+        Name = "Sidebar",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(0, 140, 1, 0),
+        Parent = ContentContainer
+    })
+    
+    local SidebarCorner = Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 10),
+        Parent = Sidebar
+    })
+    
+    -- Fix right corners
+    local SidebarFix = Utility.Create("Frame", {
+        Name = "Fix",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        BorderSizePixel = 0,
+        Position = UDim2.new(1, -10, 0, 0),
+        Size = UDim2.new(0, 10, 1, 0),
+        Parent = Sidebar
+    })
+    
+    -- Tab Buttons Container
+    local TabButtonsContainer = Utility.Create("ScrollingFrame", {
+        Name = "TabButtons",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 8, 0, 8),
+        Size = UDim2.new(1, -16, 1, -16),
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = CONFIG.AccentColor,
+        Parent = Sidebar
+    })
+    
+    local TabButtonsLayout = Utility.Create("UIListLayout", {
+        Padding = UDim.new(0, 4),
+        Parent = TabButtonsContainer
+    })
+    
+    -- Tab Content Container
+    local TabContentContainer = Utility.Create("Frame", {
+        Name = "TabContent",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 148, 0, 8),
+        Size = UDim2.new(1, -156, 1, -16),
+        ClipsDescendants = true,
+        Parent = ContentContainer
+    })
+    
+    -- Make window draggable
+    Utility.MakeDraggable(MainFrame, TitleBar)
+    
+    -- Window State
+    local isMinimized = false
+    local originalSize = windowSize
+    
+    -- Minimize functionality
+    MinimizeBtn.MouseButton1Click:Connect(function()
+        isMinimized = not isMinimized
+        if isMinimized then
+            Utility.Tween(MainFrame, {Size = UDim2.new(0, windowSize.X.Offset, 0, 40)}, 0.3)
+            ContentContainer.Visible = false
+        else
+            Utility.Tween(MainFrame, {Size = originalSize}, 0.3)
+            task.delay(0.1, function()
+                ContentContainer.Visible = true
+            end)
         end
-        return "-- Cannot get bytecode"
-    elseif typeof(bytecodeOrScript) == "string" then
-        return decompilerInstance:Decompile(bytecodeOrScript)
+    end)
+    
+    -- Close functionality
+    CloseBtn.MouseButton1Click:Connect(function()
+        Utility.Tween(MainFrame, {
+            Size = UDim2.new(0, 0, 0, 0),
+            BackgroundTransparency = 1
+        }, 0.3)
+        task.delay(0.3, function()
+            ScreenGui:Destroy()
+        end)
+    end)
+    
+    -- Button hover effects
+    for _, btn in pairs({MinimizeBtn, CloseBtn}) do
+        btn.MouseEnter:Connect(function()
+            Utility.Tween(btn, {BackgroundTransparency = 0.2}, 0.1)
+        end)
+        btn.MouseLeave:Connect(function()
+            Utility.Tween(btn, {BackgroundTransparency = 0}, 0.1)
+        end)
     end
-    return "-- Invalid input"
+    
+    -- Window object
+    local Window = {
+        Gui = ScreenGui,
+        MainFrame = MainFrame,
+        TabButtonsContainer = TabButtonsContainer,
+        TabContentContainer = TabContentContainer,
+        Tabs = {},
+        CurrentTab = nil
+    }
+    
+    -- Tab Creation Function
+    function Window:CreateTab(options)
+        options = options or {}
+        local tabName = options.Name or "Tab"
+        local tabIcon = options.Icon or "folder"
+        
+        -- Tab Button
+        local TabButton = Utility.Create("TextButton", {
+            Name = tabName .. "_Button",
+            BackgroundColor3 = CONFIG.MainColor,
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 36),
+            Font = CONFIG.Font,
+            Text = "",
+            AutoButtonColor = false,
+            Parent = TabButtonsContainer
+        })
+        Utility.AddCorner(TabButton, 6)
+        
+        -- Tab Icon
+        local TabIcon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0.5, 0),
+            AnchorPoint = Vector2.new(0, 0.5),
+            Size = UDim2.new(0, 16, 0, 16),
+            Image = Utility.GetIcon(tabIcon),
+            ImageColor3 = CONFIG.SubTextColor,
+            Parent = TabButton
+        })
+        
+        -- Tab Label
+        local TabLabel = Utility.Create("TextLabel", {
+            Name = "Label",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 34, 0, 0),
+            Size = UDim2.new(1, -44, 1, 0),
+            Font = CONFIG.Font,
+            Text = tabName,
+            TextColor3 = CONFIG.SubTextColor,
+            TextSize = 12,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            Parent = TabButton
+        })
+        
+        -- Active Indicator
+        local ActiveIndicator = Utility.Create("Frame", {
+            Name = "Indicator",
+            BackgroundColor3 = CONFIG.AccentColor,
+            Position = UDim2.new(0, 0, 0.15, 0),
+            Size = UDim2.new(0, 3, 0.7, 0),
+            Visible = false,
+            Parent = TabButton
+        })
+        Utility.AddCorner(ActiveIndicator, 2)
+        
+        -- Tab Content Page
+        local TabPage = Utility.Create("ScrollingFrame", {
+            Name = tabName .. "_Page",
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 1, 0),
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            ScrollBarThickness = 3,
+            ScrollBarImageColor3 = CONFIG.AccentColor,
+            Visible = false,
+            Parent = TabContentContainer
+        })
+        
+        local TabPageLayout = Utility.Create("UIListLayout", {
+            Padding = UDim.new(0, 6),
+            Parent = TabPage
+        })
+        
+        local TabPagePadding = Utility.Create("UIPadding", {
+            PaddingRight = UDim.new(0, 6),
+            Parent = TabPage
+        })
+        
+        -- Auto-size canvas
+        TabPageLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            TabPage.CanvasSize = UDim2.new(0, 0, 0, TabPageLayout.AbsoluteContentSize.Y + 10)
+        end)
+        
+        -- Update TabButtons canvas size
+        local function UpdateSidebarCanvas()
+            TabButtonsContainer.CanvasSize = UDim2.new(0, 0, 0, TabButtonsLayout.AbsoluteContentSize.Y)
+        end
+        TabButtonsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(UpdateSidebarCanvas)
+        UpdateSidebarCanvas()
+        
+        -- Tab Object
+        local Tab = {
+            Button = TabButton,
+            Page = TabPage,
+            Name = tabName,
+            Elements = {}
+        }
+        
+        -- Select Tab Function
+        local function SelectTab()
+            -- Deselect all tabs
+            for _, t in pairs(Window.Tabs) do
+                t.Button.BackgroundTransparency = 1
+                t.Button.Icon.ImageColor3 = CONFIG.SubTextColor
+                t.Button.Label.TextColor3 = CONFIG.SubTextColor
+                t.Button.Indicator.Visible = false
+                t.Page.Visible = false
+            end
+            
+            -- Select this tab
+            Utility.Tween(TabButton, {BackgroundTransparency = 0.8}, 0.2)
+            Utility.Tween(TabIcon, {ImageColor3 = CONFIG.AccentColor}, 0.2)
+            Utility.Tween(TabLabel, {TextColor3 = CONFIG.TextColor}, 0.2)
+            ActiveIndicator.Visible = true
+            TabPage.Visible = true
+            
+            Window.CurrentTab = Tab
+        end
+        
+        -- Tab button click
+        TabButton.MouseButton1Click:Connect(SelectTab)
+        
+        -- Hover effects
+        TabButton.MouseEnter:Connect(function()
+            if Window.CurrentTab ~= Tab then
+                Utility.Tween(TabButton, {BackgroundTransparency = 0.9}, 0.1)
+            end
+        end)
+        
+        TabButton.MouseLeave:Connect(function()
+            if Window.CurrentTab ~= Tab then
+                Utility.Tween(TabButton, {BackgroundTransparency = 1}, 0.1)
+            end
+        end)
+        
+        -- Add to tabs table
+        table.insert(Window.Tabs, Tab)
+        
+        -- Select first tab automatically
+        if #Window.Tabs == 1 then
+            SelectTab()
+        end
+        
+        -- Tab Methods will be added in Part 3
+        Tab.Window = Window
+        
+        return Tab
+    end
+    
+    -- Toggle Visibility with Keybind
+    local toggleKey = options.ToggleKey or Enum.KeyCode.RightControl
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not gameProcessed and input.KeyCode == toggleKey then
+            MainFrame.Visible = not MainFrame.Visible
+        end
+    end)
+    
+    -- Opening Animation
+    MainFrame.Size = UDim2.new(0, 0, 0, 0)
+    MainFrame.BackgroundTransparency = 1
+    
+    task.delay(0.1, function()
+        Utility.Tween(MainFrame, {
+            Size = windowSize,
+            BackgroundTransparency = 0
+        }, 0.4, Enum.EasingStyle.Back)
+    end)
+    
+    table.insert(ShadowLib.Windows, Window)
+    return Window
 end
 
-print("✓ Custom Decompiler Loaded!")
-print("  Use: decompile(script) or customdecompile(bytecode)")
+print("[ShadowLib] Part 2 Loaded - Window & Tab System ✓")
 
-return Decompiler
+
+--[[
+    ShadowLib - Part 3
+    Toggle, Button, Slider Components
+]]
+
+-- Section Creator (Gruplandırma için)
+function ShadowLib:AddSectionToTab(Tab, options)
+    options = options or {}
+    local sectionName = options.Name or "Section"
+    
+    local Section = Utility.Create("Frame", {
+        Name = sectionName .. "_Section",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 36),
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(Section, 8)
+    
+    local SectionTitle = Utility.Create("TextLabel", {
+        Name = "Title",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 0, 0),
+        Size = UDim2.new(1, -24, 1, 0),
+        Font = CONFIG.TitleFont,
+        Text = sectionName,
+        TextColor3 = CONFIG.AccentColor,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Section
+    })
+    
+    return Section
+end
+
+-- ═══════════════════════════════════════════
+-- BUTTON COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddButtonToTab(Tab, options)
+    options = options or {}
+    local buttonName = options.Name or "Button"
+    local buttonIcon = options.Icon or nil
+    local buttonCallback = options.Callback or function() end
+    
+    local ButtonHolder = Utility.Create("Frame", {
+        Name = buttonName .. "_Holder",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 38),
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(ButtonHolder, 8)
+    
+    local Button = Utility.Create("TextButton", {
+        Name = "Button",
+        BackgroundColor3 = CONFIG.AccentColor,
+        Position = UDim2.new(0, 6, 0, 6),
+        Size = UDim2.new(1, -12, 1, -12),
+        Font = CONFIG.Font,
+        Text = "",
+        AutoButtonColor = false,
+        ClipsDescendants = true,
+        Parent = ButtonHolder
+    })
+    Utility.AddCorner(Button, 6)
+    
+    local contentOffset = 0
+    
+    -- Icon (optional)
+    if buttonIcon then
+        local Icon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0.5, 0),
+            AnchorPoint = Vector2.new(0, 0.5),
+            Size = UDim2.new(0, 16, 0, 16),
+            Image = Utility.GetIcon(buttonIcon),
+            ImageColor3 = CONFIG.TextColor,
+            Parent = Button
+        })
+        contentOffset = 22
+    end
+    
+    local ButtonLabel = Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12 + contentOffset, 0, 0),
+        Size = UDim2.new(1, -24 - contentOffset, 1, 0),
+        Font = CONFIG.Font,
+        Text = buttonName,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Button
+    })
+    
+    -- Click effect
+    Button.MouseButton1Click:Connect(function()
+        -- Ripple effect
+        local mousePos = UserInputService:GetMouseLocation()
+        local relativeX = mousePos.X - Button.AbsolutePosition.X
+        local relativeY = mousePos.Y - Button.AbsolutePosition.Y - 36
+        Utility.Ripple(Button, relativeX, relativeY)
+        
+        -- Scale animation
+        Utility.Tween(Button, {Size = UDim2.new(1, -16, 1, -16), Position = UDim2.new(0, 8, 0, 8)}, 0.1)
+        task.delay(0.1, function()
+            Utility.Tween(Button, {Size = UDim2.new(1, -12, 1, -12), Position = UDim2.new(0, 6, 0, 6)}, 0.1)
+        end)
+        
+        buttonCallback()
+    end)
+    
+    -- Hover effects
+    Button.MouseEnter:Connect(function()
+        Utility.Tween(Button, {BackgroundColor3 = Color3.fromRGB(
+            math.min(CONFIG.AccentColor.R * 255 + 20, 255),
+            math.min(CONFIG.AccentColor.G * 255 + 20, 255),
+            math.min(CONFIG.AccentColor.B * 255 + 20, 255)
+        )}, 0.2)
+    end)
+    
+    Button.MouseLeave:Connect(function()
+        Utility.Tween(Button, {BackgroundColor3 = CONFIG.AccentColor}, 0.2)
+    end)
+    
+    local ButtonObject = {
+        Holder = ButtonHolder,
+        Button = Button,
+        Label = ButtonLabel,
+        
+        SetText = function(self, text)
+            ButtonLabel.Text = text
+        end,
+        
+        SetCallback = function(self, callback)
+            buttonCallback = callback
+        end
+    }
+    
+    table.insert(Tab.Elements, ButtonObject)
+    return ButtonObject
+end
+
+-- ═══════════════════════════════════════════
+-- TOGGLE COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddToggleToTab(Tab, options)
+    options = options or {}
+    local toggleName = options.Name or "Toggle"
+    local toggleIcon = options.Icon or nil
+    local toggleDefault = options.Default or false
+    local toggleCallback = options.Callback or function() end
+    local toggleFlag = options.Flag or nil
+    
+    local toggled = toggleDefault
+    
+    local ToggleHolder = Utility.Create("Frame", {
+        Name = toggleName .. "_Holder",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 42),
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(ToggleHolder, 8)
+    
+    local contentOffset = 0
+    
+    -- Icon (optional)
+    if toggleIcon then
+        local Icon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0.5, 0),
+            AnchorPoint = Vector2.new(0, 0.5),
+            Size = UDim2.new(0, 18, 0, 18),
+            Image = Utility.GetIcon(toggleIcon),
+            ImageColor3 = CONFIG.SubTextColor,
+            Parent = ToggleHolder
+        })
+        contentOffset = 26
+    end
+    
+    local ToggleLabel = Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12 + contentOffset, 0, 0),
+        Size = UDim2.new(1, -70 - contentOffset, 1, 0),
+        Font = CONFIG.Font,
+        Text = toggleName,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = ToggleHolder
+    })
+    
+    -- Toggle Switch
+    local ToggleSwitch = Utility.Create("Frame", {
+        Name = "Switch",
+        AnchorPoint = Vector2.new(1, 0.5),
+        BackgroundColor3 = CONFIG.BorderColor,
+        Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.new(0, 44, 0, 24),
+        Parent = ToggleHolder
+    })
+    Utility.AddCorner(ToggleSwitch, 12)
+    
+    local ToggleCircle = Utility.Create("Frame", {
+        Name = "Circle",
+        AnchorPoint = Vector2.new(0, 0.5),
+        BackgroundColor3 = CONFIG.TextColor,
+        Position = UDim2.new(0, 3, 0.5, 0),
+        Size = UDim2.new(0, 18, 0, 18),
+        Parent = ToggleSwitch
+    })
+    Utility.AddCorner(ToggleCircle, 10)
+    
+    -- Checkmark inside circle
+    local Checkmark = Utility.Create("ImageLabel", {
+        Name = "Check",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 12, 0, 12),
+        Image = Utility.GetIcon("check"),
+        ImageColor3 = CONFIG.AccentColor,
+        ImageTransparency = 1,
+        Parent = ToggleCircle
+    })
+    
+    -- Toggle Click Area
+    local ToggleButton = Utility.Create("TextButton", {
+        Name = "ClickArea",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        Text = "",
+        Parent = ToggleHolder
+    })
+    
+    local function UpdateToggle(value, skipCallback)
+        toggled = value
+        
+        if toggled then
+            Utility.Tween(ToggleSwitch, {BackgroundColor3 = CONFIG.AccentColor}, 0.2)
+            Utility.Tween(ToggleCircle, {Position = UDim2.new(1, -21, 0.5, 0)}, 0.2, Enum.EasingStyle.Back)
+            Utility.Tween(Checkmark, {ImageTransparency = 0}, 0.2)
+        else
+            Utility.Tween(ToggleSwitch, {BackgroundColor3 = CONFIG.BorderColor}, 0.2)
+            Utility.Tween(ToggleCircle, {Position = UDim2.new(0, 3, 0.5, 0)}, 0.2, Enum.EasingStyle.Back)
+            Utility.Tween(Checkmark, {ImageTransparency = 1}, 0.2)
+        end
+        
+        if not skipCallback then
+            toggleCallback(toggled)
+        end
+        
+        -- Flag support
+        if toggleFlag then
+            ShadowLib.Flags = ShadowLib.Flags or {}
+            ShadowLib.Flags[toggleFlag] = toggled
+        end
+    end
+    
+    ToggleButton.MouseButton1Click:Connect(function()
+        UpdateToggle(not toggled)
+    end)
+    
+    -- Hover effect
+    ToggleButton.MouseEnter:Connect(function()
+        Utility.Tween(ToggleHolder, {BackgroundColor3 = Color3.fromRGB(
+            CONFIG.SecondaryColor.R * 255 + 5,
+            CONFIG.SecondaryColor.G * 255 + 5,
+            CONFIG.SecondaryColor.B * 255 + 5
+        )}, 0.1)
+    end)
+    
+    ToggleButton.MouseLeave:Connect(function()
+        Utility.Tween(ToggleHolder, {BackgroundColor3 = CONFIG.SecondaryColor}, 0.1)
+    end)
+    
+    -- Set default value
+    if toggleDefault then
+        UpdateToggle(true, true)
+    end
+    
+    local ToggleObject = {
+        Holder = ToggleHolder,
+        Value = toggled,
+        
+        Set = function(self, value)
+            UpdateToggle(value)
+        end,
+        
+        Get = function(self)
+            return toggled
+        end,
+        
+        SetCallback = function(self, callback)
+            toggleCallback = callback
+        end
+    }
+    
+    table.insert(Tab.Elements, ToggleObject)
+    return ToggleObject
+end
+
+-- ═══════════════════════════════════════════
+-- SLIDER COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddSliderToTab(Tab, options)
+    options = options or {}
+    local sliderName = options.Name or "Slider"
+    local sliderIcon = options.Icon or nil
+    local sliderMin = options.Min or 0
+    local sliderMax = options.Max or 100
+    local sliderDefault = options.Default or sliderMin
+    local sliderIncrement = options.Increment or 1
+    local sliderSuffix = options.Suffix or ""
+    local sliderCallback = options.Callback or function() end
+    local sliderFlag = options.Flag or nil
+    
+    local currentValue = sliderDefault
+    
+    local SliderHolder = Utility.Create("Frame", {
+        Name = sliderName .. "_Holder",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 58),
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(SliderHolder, 8)
+    
+    local contentOffset = 0
+    
+    -- Icon (optional)
+    if sliderIcon then
+        local Icon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 12),
+            Size = UDim2.new(0, 16, 0, 16),
+            Image = Utility.GetIcon(sliderIcon),
+            ImageColor3 = CONFIG.SubTextColor,
+            Parent = SliderHolder
+        })
+        contentOffset = 24
+    end
+    
+    local SliderLabel = Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12 + contentOffset, 0, 6),
+        Size = UDim2.new(0.5, -12 - contentOffset, 0, 20),
+        Font = CONFIG.Font,
+        Text = sliderName,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = SliderHolder
+    })
+    
+    local SliderValue = Utility.Create("TextLabel", {
+        Name = "Value",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0.5, 0, 0, 6),
+        Size = UDim2.new(0.5, -12, 0, 20),
+        Font = CONFIG.TitleFont,
+        Text = tostring(currentValue) .. sliderSuffix,
+        TextColor3 = CONFIG.AccentColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Parent = SliderHolder
+    })
+    
+    -- Slider Track
+    local SliderTrack = Utility.Create("Frame", {
+        Name = "Track",
+        BackgroundColor3 = CONFIG.BorderColor,
+        Position = UDim2.new(0, 12, 0, 34),
+        Size = UDim2.new(1, -24, 0, 8),
+        Parent = SliderHolder
+    })
+    Utility.AddCorner(SliderTrack, 4)
+    
+    -- Slider Fill
+    local SliderFill = Utility.Create("Frame", {
+        Name = "Fill",
+        BackgroundColor3 = CONFIG.AccentColor,
+        Size = UDim2.new(0, 0, 1, 0),
+        Parent = SliderTrack
+    })
+    Utility.AddCorner(SliderFill, 4)
+    
+    -- Slider Fill Gradient
+    local FillGradient = Utility.Create("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, CONFIG.AccentColor),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(
+                math.max(CONFIG.AccentColor.R * 255 - 30, 0),
+                math.max(CONFIG.AccentColor.G * 255 - 30, 0),
+                math.max(CONFIG.AccentColor.B * 255 - 30, 0)
+            ))
+        }),
+        Rotation = 90,
+        Parent = SliderFill
+    })
+    
+    -- Slider Knob
+    local SliderKnob = Utility.Create("Frame", {
+        Name = "Knob",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = CONFIG.TextColor,
+        Position = UDim2.new(0, 0, 0.5, 0),
+        Size = UDim2.new(0, 16, 0, 16),
+        Parent = SliderTrack
+    })
+    Utility.AddCorner(SliderKnob, 8)
+    Utility.AddStroke(SliderKnob, CONFIG.AccentColor, 2)
+    
+    -- Click area
+    local SliderButton = Utility.Create("TextButton", {
+        Name = "ClickArea",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 0, 28),
+        Size = UDim2.new(1, -24, 0, 20),
+        Text = "",
+        Parent = SliderHolder
+    })
+    
+    local function UpdateSlider(value, skipCallback)
+        value = math.clamp(value, sliderMin, sliderMax)
+        
+        -- Round to increment
+        value = math.floor(value / sliderIncrement + 0.5) * sliderIncrement
+        
+        -- Handle floating point
+        if sliderIncrement < 1 then
+            value = tonumber(string.format("%.2f", value))
+        end
+        
+        currentValue = value
+        
+        local percent = (value - sliderMin) / (sliderMax - sliderMin)
+        
+        Utility.Tween(SliderFill, {Size = UDim2.new(percent, 0, 1, 0)}, 0.1)
+        Utility.Tween(SliderKnob, {Position = UDim2.new(percent, 0, 0.5, 0)}, 0.1)
+        
+        SliderValue.Text = tostring(currentValue) .. sliderSuffix
+        
+        if not skipCallback then
+            sliderCallback(currentValue)
+        end
+        
+        -- Flag support
+        if sliderFlag then
+            ShadowLib.Flags = ShadowLib.Flags or {}
+            ShadowLib.Flags[sliderFlag] = currentValue
+        end
+    end
+    
+    local sliding = false
+    
+    SliderButton.MouseButton1Down:Connect(function()
+        sliding = true
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliding = false
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if sliding and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local mouseX = input.Position.X
+            local trackStart = SliderTrack.AbsolutePosition.X
+            local trackWidth = SliderTrack.AbsoluteSize.X
+            
+            local percent = math.clamp((mouseX - trackStart) / trackWidth, 0, 1)
+            local value = sliderMin + (sliderMax - sliderMin) * percent
+            
+            UpdateSlider(value)
+        end
+    end)
+    
+    -- Hover effect on knob
+    SliderButton.MouseEnter:Connect(function()
+        Utility.Tween(SliderKnob, {Size = UDim2.new(0, 18, 0, 18)}, 0.1)
+    end)
+    
+    SliderButton.MouseLeave:Connect(function()
+        if not sliding then
+            Utility.Tween(SliderKnob, {Size = UDim2.new(0, 16, 0, 16)}, 0.1)
+        end
+    end)
+    
+    -- Set default
+    UpdateSlider(sliderDefault, true)
+    
+    local SliderObject = {
+        Holder = SliderHolder,
+        Value = currentValue,
+        
+        Set = function(self, value)
+            UpdateSlider(value)
+        end,
+        
+        Get = function(self)
+            return currentValue
+        end,
+        
+        SetCallback = function(self, callback)
+            sliderCallback = callback
+        end
+    }
+    
+    table.insert(Tab.Elements, SliderObject)
+    return SliderObject
+end
+
+-- ═══════════════════════════════════════════
+-- LABEL / PARAGRAPH COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddLabelToTab(Tab, options)
+    options = options or {}
+    local labelText = options.Text or "Label"
+    local labelIcon = options.Icon or nil
+    
+    local LabelHolder = Utility.Create("Frame", {
+        Name = "Label_Holder",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 36),
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(LabelHolder, 8)
+    
+    local contentOffset = 0
+    
+    if labelIcon then
+        local Icon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0.5, 0),
+            AnchorPoint = Vector2.new(0, 0.5),
+            Size = UDim2.new(0, 16, 0, 16),
+            Image = Utility.GetIcon(labelIcon),
+            ImageColor3 = CONFIG.AccentColor,
+            Parent = LabelHolder
+        })
+        contentOffset = 24
+    end
+    
+    local Label = Utility.Create("TextLabel", {
+        Name = "Text",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12 + contentOffset, 0, 0),
+        Size = UDim2.new(1, -24 - contentOffset, 1, 0),
+        Font = CONFIG.Font,
+        Text = labelText,
+        TextColor3 = CONFIG.SubTextColor,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        Parent = LabelHolder
+    })
+    
+    local LabelObject = {
+        Holder = LabelHolder,
+        Label = Label,
+        
+        SetText = function(self, text)
+            Label.Text = text
+        end
+    }
+    
+    table.insert(Tab.Elements, LabelObject)
+    return LabelObject
+end
+
+print("[ShadowLib] Part 3 Loaded - Toggle, Button, Slider ✓")
+
+--[[
+    ShadowLib - Part 4
+    Dropdown, Input, Keybind Components
+]]
+
+-- ═══════════════════════════════════════════
+-- DROPDOWN COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddDropdownToTab(Tab, options)
+    options = options or {}
+    local dropdownName = options.Name or "Dropdown"
+    local dropdownIcon = options.Icon or nil
+    local dropdownItems = options.Items or {}
+    local dropdownDefault = options.Default or nil
+    local dropdownMulti = options.Multi or false
+    local dropdownCallback = options.Callback or function() end
+    local dropdownFlag = options.Flag or nil
+    
+    local selectedItem = dropdownDefault
+    local selectedItems = {}
+    local isOpen = false
+    
+    -- Multi select default
+    if dropdownMulti and type(dropdownDefault) == "table" then
+        for _, v in pairs(dropdownDefault) do
+            selectedItems[v] = true
+        end
+    end
+    
+    local DropdownHolder = Utility.Create("Frame", {
+        Name = dropdownName .. "_Holder",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 70),
+        ClipsDescendants = true,
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(DropdownHolder, 8)
+    
+    local contentOffset = 0
+    
+    if dropdownIcon then
+        local Icon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 14),
+            Size = UDim2.new(0, 16, 0, 16),
+            Image = Utility.GetIcon(dropdownIcon),
+            ImageColor3 = CONFIG.SubTextColor,
+            Parent = DropdownHolder
+        })
+        contentOffset = 24
+    end
+    
+    local DropdownLabel = Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12 + contentOffset, 0, 8),
+        Size = UDim2.new(1, -24 - contentOffset, 0, 16),
+        Font = CONFIG.Font,
+        Text = dropdownName,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = DropdownHolder
+    })
+    
+    -- Selected Display
+    local SelectedDisplay = Utility.Create("Frame", {
+        Name = "Selected",
+        BackgroundColor3 = CONFIG.MainColor,
+        Position = UDim2.new(0, 10, 0, 32),
+        Size = UDim2.new(1, -20, 0, 30),
+        Parent = DropdownHolder
+    })
+    Utility.AddCorner(SelectedDisplay, 6)
+    Utility.AddStroke(SelectedDisplay, CONFIG.BorderColor, 1)
+    
+    local function GetDisplayText()
+        if dropdownMulti then
+            local selected = {}
+            for item, isSelected in pairs(selectedItems) do
+                if isSelected then
+                    table.insert(selected, item)
+                end
+            end
+            if #selected == 0 then
+                return "Seç..."
+            end
+            return table.concat(selected, ", ")
+        else
+            return selectedItem or "Seç..."
+        end
+    end
+    
+    local SelectedText = Utility.Create("TextLabel", {
+        Name = "Text",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 10, 0, 0),
+        Size = UDim2.new(1, -36, 1, 0),
+        Font = CONFIG.Font,
+        Text = GetDisplayText(),
+        TextColor3 = selectedItem and CONFIG.TextColor or CONFIG.SubTextColor,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Parent = SelectedDisplay
+    })
+    
+    -- Arrow Icon
+    local ArrowIcon = Utility.Create("ImageLabel", {
+        Name = "Arrow",
+        AnchorPoint = Vector2.new(1, 0.5),
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, -8, 0.5, 0),
+        Size = UDim2.new(0, 16, 0, 16),
+        Image = Utility.GetIcon("chevron-down"),
+        ImageColor3 = CONFIG.SubTextColor,
+        Rotation = 0,
+        Parent = SelectedDisplay
+    })
+    
+    -- Dropdown Items Container
+    local ItemsContainer = Utility.Create("Frame", {
+        Name = "Items",
+        BackgroundColor3 = CONFIG.MainColor,
+        Position = UDim2.new(0, 10, 0, 68),
+        Size = UDim2.new(1, -20, 0, 0),
+        ClipsDescendants = true,
+        Visible = false,
+        Parent = DropdownHolder
+    })
+    Utility.AddCorner(ItemsContainer, 6)
+    Utility.AddStroke(ItemsContainer, CONFIG.BorderColor, 1)
+    
+    local ItemsScroll = Utility.Create("ScrollingFrame", {
+        Name = "Scroll",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = CONFIG.AccentColor,
+        Parent = ItemsContainer
+    })
+    
+    local ItemsLayout = Utility.Create("UIListLayout", {
+        Padding = UDim.new(0, 2),
+        Parent = ItemsScroll
+    })
+    
+    local ItemsPadding = Utility.Create("UIPadding", {
+        PaddingTop = UDim.new(0, 4),
+        PaddingBottom = UDim.new(0, 4),
+        PaddingLeft = UDim.new(0, 4),
+        PaddingRight = UDim.new(0, 4),
+        Parent = ItemsScroll
+    })
+    
+    local function UpdateCallback()
+        if dropdownMulti then
+            local result = {}
+            for item, isSelected in pairs(selectedItems) do
+                if isSelected then
+                    table.insert(result, item)
+                end
+            end
+            dropdownCallback(result)
+            
+            if dropdownFlag then
+                ShadowLib.Flags = ShadowLib.Flags or {}
+                ShadowLib.Flags[dropdownFlag] = result
+            end
+        else
+            dropdownCallback(selectedItem)
+            
+            if dropdownFlag then
+                ShadowLib.Flags = ShadowLib.Flags or {}
+                ShadowLib.Flags[dropdownFlag] = selectedItem
+            end
+        end
+    end
+    
+    local function CreateItem(itemName)
+        local Item = Utility.Create("TextButton", {
+            Name = itemName,
+            BackgroundColor3 = CONFIG.SecondaryColor,
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 28),
+            Font = CONFIG.Font,
+            Text = "",
+            AutoButtonColor = false,
+            Parent = ItemsScroll
+        })
+        Utility.AddCorner(Item, 4)
+        
+        local ItemLabel = Utility.Create("TextLabel", {
+            Name = "Label",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0, 0),
+            Size = UDim2.new(1, -36, 1, 0),
+            Font = CONFIG.Font,
+            Text = itemName,
+            TextColor3 = CONFIG.TextColor,
+            TextSize = 12,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Item
+        })
+        
+        local ItemCheck = Utility.Create("ImageLabel", {
+            Name = "Check",
+            AnchorPoint = Vector2.new(1, 0.5),
+            BackgroundTransparency = 1,
+            Position = UDim2.new(1, -8, 0.5, 0),
+            Size = UDim2.new(0, 14, 0, 14),
+            Image = Utility.GetIcon("check"),
+            ImageColor3 = CONFIG.AccentColor,
+            ImageTransparency = 1,
+            Parent = Item
+        })
+        
+        local function UpdateItemVisual()
+            local isSelected = dropdownMulti and selectedItems[itemName] or selectedItem == itemName
+            
+            if isSelected then
+                Utility.Tween(Item, {BackgroundTransparency = 0.8}, 0.1)
+                Utility.Tween(ItemCheck, {ImageTransparency = 0}, 0.1)
+                Utility.Tween(ItemLabel, {TextColor3 = CONFIG.AccentColor}, 0.1)
+            else
+                Utility.Tween(Item, {BackgroundTransparency = 1}, 0.1)
+                Utility.Tween(ItemCheck, {ImageTransparency = 1}, 0.1)
+                Utility.Tween(ItemLabel, {TextColor3 = CONFIG.TextColor}, 0.1)
+            end
+        end
+        
+        Item.MouseButton1Click:Connect(function()
+            if dropdownMulti then
+                selectedItems[itemName] = not selectedItems[itemName]
+                UpdateItemVisual()
+            else
+                selectedItem = itemName
+                -- Update all items
+                for _, child in pairs(ItemsScroll:GetChildren()) do
+                    if child:IsA("TextButton") then
+                        local isThis = child.Name == itemName
+                        Utility.Tween(child, {BackgroundTransparency = isThis and 0.8 or 1}, 0.1)
+                        Utility.Tween(child.Check, {ImageTransparency = isThis and 0 or 1}, 0.1)
+                        Utility.Tween(child.Label, {TextColor3 = isThis and CONFIG.AccentColor or CONFIG.TextColor}, 0.1)
+                    end
+                end
+            end
+            
+            SelectedText.Text = GetDisplayText()
+            SelectedText.TextColor3 = CONFIG.TextColor
+            UpdateCallback()
+            
+            if not dropdownMulti then
+                -- Close dropdown after selection
+                isOpen = false
+                Utility.Tween(ArrowIcon, {Rotation = 0}, 0.2)
+                Utility.Tween(ItemsContainer, {Size = UDim2.new(1, -20, 0, 0)}, 0.2)
+                Utility.Tween(DropdownHolder, {Size = UDim2.new(1, 0, 0, 70)}, 0.2)
+                task.delay(0.2, function()
+                    ItemsContainer.Visible = false
+                end)
+            end
+        end)
+        
+        Item.MouseEnter:Connect(function()
+            if not (dropdownMulti and selectedItems[itemName] or selectedItem == itemName) then
+                Utility.Tween(Item, {BackgroundTransparency = 0.9}, 0.1)
+            end
+        end)
+        
+        Item.MouseLeave:Connect(function()
+            if not (dropdownMulti and selectedItems[itemName] or selectedItem == itemName) then
+                Utility.Tween(Item, {BackgroundTransparency = 1}, 0.1)
+            end
+        end)
+        
+        UpdateItemVisual()
+        return Item
+    end
+    
+    -- Create items
+    for _, itemName in pairs(dropdownItems) do
+        CreateItem(itemName)
+    end
+    
+    -- Update canvas size
+    ItemsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        ItemsScroll.CanvasSize = UDim2.new(0, 0, 0, ItemsLayout.AbsoluteContentSize.Y + 8)
+    end)
+    
+    -- Toggle dropdown
+    local DropdownButton = Utility.Create("TextButton", {
+        Name = "Toggle",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 62),
+        Text = "",
+        Parent = DropdownHolder
+    })
+    
+    DropdownButton.MouseButton1Click:Connect(function()
+        isOpen = not isOpen
+        
+        if isOpen then
+            ItemsContainer.Visible = true
+            local itemCount = #dropdownItems
+            local itemsHeight = math.min(itemCount * 30 + 8, 150)
+            
+            Utility.Tween(ArrowIcon, {Rotation = 180}, 0.2)
+            Utility.Tween(ItemsContainer, {Size = UDim2.new(1, -20, 0, itemsHeight)}, 0.2)
+            Utility.Tween(DropdownHolder, {Size = UDim2.new(1, 0, 0, 76 + itemsHeight)}, 0.2)
+        else
+            Utility.Tween(ArrowIcon, {Rotation = 0}, 0.2)
+            Utility.Tween(ItemsContainer, {Size = UDim2.new(1, -20, 0, 0)}, 0.2)
+            Utility.Tween(DropdownHolder, {Size = UDim2.new(1, 0, 0, 70)}, 0.2)
+            task.delay(0.2, function()
+                ItemsContainer.Visible = false
+            end)
+        end
+    end)
+    
+    local DropdownObject = {
+        Holder = DropdownHolder,
+        Value = dropdownMulti and selectedItems or selectedItem,
+        
+        Set = function(self, value)
+            if dropdownMulti and type(value) == "table" then
+                selectedItems = {}
+                for _, v in pairs(value) do
+                    selectedItems[v] = true
+                end
+            else
+                selectedItem = value
+            end
+            SelectedText.Text = GetDisplayText()
+            SelectedText.TextColor3 = CONFIG.TextColor
+            
+            for _, child in pairs(ItemsScroll:GetChildren()) do
+                if child:IsA("TextButton") then
+                    local isSelected = dropdownMulti and selectedItems[child.Name] or selectedItem == child.Name
+                    child.BackgroundTransparency = isSelected and 0.8 or 1
+                    child.Check.ImageTransparency = isSelected and 0 or 1
+                    child.Label.TextColor3 = isSelected and CONFIG.AccentColor or CONFIG.TextColor
+                end
+            end
+        end,
+        
+        Get = function(self)
+            if dropdownMulti then
+                local result = {}
+                for item, isSelected in pairs(selectedItems) do
+                    if isSelected then table.insert(result, item) end
+                end
+                return result
+            end
+            return selectedItem
+        end,
+        
+        Refresh = function(self, newItems)
+            dropdownItems = newItems
+            for _, child in pairs(ItemsScroll:GetChildren()) do
+                if child:IsA("TextButton") then
+                    child:Destroy()
+                end
+            end
+            for _, itemName in pairs(newItems) do
+                CreateItem(itemName)
+            end
+        end,
+        
+        SetCallback = function(self, callback)
+            dropdownCallback = callback
+        end
+    }
+    
+    table.insert(Tab.Elements, DropdownObject)
+    return DropdownObject
+end
+
+-- ═══════════════════════════════════════════
+-- INPUT / TEXTBOX COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddInputToTab(Tab, options)
+    options = options or {}
+    local inputName = options.Name or "Input"
+    local inputIcon = options.Icon or nil
+    local inputPlaceholder = options.Placeholder or "Yaz..."
+    local inputDefault = options.Default or ""
+    local inputNumeric = options.Numeric or false
+    local inputFinished = options.Finished or false
+    local inputCallback = options.Callback or function() end
+    local inputFlag = options.Flag or nil
+    
+    local currentValue = inputDefault
+    
+    local InputHolder = Utility.Create("Frame", {
+        Name = inputName .. "_Holder",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 70),
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(InputHolder, 8)
+    
+    local contentOffset = 0
+    
+    if inputIcon then
+        local Icon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 14),
+            Size = UDim2.new(0, 16, 0, 16),
+            Image = Utility.GetIcon(inputIcon),
+            ImageColor3 = CONFIG.SubTextColor,
+            Parent = InputHolder
+        })
+        contentOffset = 24
+    end
+    
+    local InputLabel = Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12 + contentOffset, 0, 8),
+        Size = UDim2.new(1, -24 - contentOffset, 0, 16),
+        Font = CONFIG.Font,
+        Text = inputName,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = InputHolder
+    })
+    
+    local InputBox = Utility.Create("Frame", {
+        Name = "Box",
+        BackgroundColor3 = CONFIG.MainColor,
+        Position = UDim2.new(0, 10, 0, 32),
+        Size = UDim2.new(1, -20, 0, 30),
+        Parent = InputHolder
+    })
+    Utility.AddCorner(InputBox, 6)
+    
+    local InputStroke = Utility.AddStroke(InputBox, CONFIG.BorderColor, 1)
+    
+    local TextBox = Utility.Create("TextBox", {
+        Name = "TextBox",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 10, 0, 0),
+        Size = UDim2.new(1, -20, 1, 0),
+        Font = CONFIG.Font,
+        PlaceholderText = inputPlaceholder,
+        PlaceholderColor3 = CONFIG.SubTextColor,
+        Text = inputDefault,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ClearTextOnFocus = false,
+        Parent = InputBox
+    })
+    
+    -- Focus effects
+    TextBox.Focused:Connect(function()
+        Utility.Tween(InputStroke, {Color = CONFIG.AccentColor}, 0.2)
+        Utility.Tween(InputBox, {BackgroundColor3 = Color3.fromRGB(
+            CONFIG.MainColor.R * 255 + 5,
+            CONFIG.MainColor.G * 255 + 5,
+            CONFIG.MainColor.B * 255 + 5
+        )}, 0.2)
+    end)
+    
+    TextBox.FocusLost:Connect(function(enterPressed)
+        Utility.Tween(InputStroke, {Color = CONFIG.BorderColor}, 0.2)
+        Utility.Tween(InputBox, {BackgroundColor3 = CONFIG.MainColor}, 0.2)
+        
+        local text = TextBox.Text
+        
+        if inputNumeric then
+            text = text:gsub("[^%d%.%-]", "")
+            TextBox.Text = text
+        end
+        
+        currentValue = text
+        
+        if inputFinished then
+            inputCallback(text)
+        end
+        
+        if inputFlag then
+            ShadowLib.Flags = ShadowLib.Flags or {}
+            ShadowLib.Flags[inputFlag] = text
+        end
+    end)
+    
+    if not inputFinished then
+        TextBox:GetPropertyChangedSignal("Text"):Connect(function()
+            local text = TextBox.Text
+            
+            if inputNumeric then
+                text = text:gsub("[^%d%.%-]", "")
+                if text ~= TextBox.Text then
+                    TextBox.Text = text
+                end
+            end
+            
+            currentValue = text
+            inputCallback(text)
+            
+            if inputFlag then
+                ShadowLib.Flags = ShadowLib.Flags or {}
+                ShadowLib.Flags[inputFlag] = text
+            end
+        end)
+    end
+    
+    local InputObject = {
+        Holder = InputHolder,
+        TextBox = TextBox,
+        Value = currentValue,
+        
+        Set = function(self, text)
+            TextBox.Text = text
+            currentValue = text
+        end,
+        
+        Get = function(self)
+            return TextBox.Text
+        end,
+        
+        SetCallback = function(self, callback)
+            inputCallback = callback
+        end
+    }
+    
+    table.insert(Tab.Elements, InputObject)
+    return InputObject
+end
+
+-- ═══════════════════════════════════════════
+-- KEYBIND COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddKeybindToTab(Tab, options)
+    options = options or {}
+    local keybindName = options.Name or "Keybind"
+    local keybindIcon = options.Icon or "key"
+    local keybindDefault = options.Default or Enum.KeyCode.Unknown
+    local keybindCallback = options.Callback or function() end
+    local keybindChangedCallback = options.ChangedCallback or function() end
+    local keybindFlag = options.Flag or nil
+    
+    local currentKey = keybindDefault
+    local isListening = false
+    
+    local KeybindHolder = Utility.Create("Frame", {
+        Name = keybindName .. "_Holder",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 42),
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(KeybindHolder, 8)
+    
+    local contentOffset = 0
+    
+    if keybindIcon then
+        local Icon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0.5, 0),
+            AnchorPoint = Vector2.new(0, 0.5),
+            Size = UDim2.new(0, 16, 0, 16),
+            Image = Utility.GetIcon(keybindIcon),
+            ImageColor3 = CONFIG.SubTextColor,
+            Parent = KeybindHolder
+        })
+        contentOffset = 24
+    end
+    
+    local KeybindLabel = Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12 + contentOffset, 0, 0),
+        Size = UDim2.new(1, -110 - contentOffset, 1, 0),
+        Font = CONFIG.Font,
+        Text = keybindName,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = KeybindHolder
+    })
+    
+    -- Keybind Button
+    local KeybindButton = Utility.Create("TextButton", {
+        Name = "Button",
+        AnchorPoint = Vector2.new(1, 0.5),
+        BackgroundColor3 = CONFIG.MainColor,
+        Position = UDim2.new(1, -10, 0.5, 0),
+        Size = UDim2.new(0, 80, 0, 26),
+        Font = CONFIG.Font,
+        Text = currentKey == Enum.KeyCode.Unknown and "Yok" or currentKey.Name,
+        TextColor3 = CONFIG.SubTextColor,
+        TextSize = 11,
+        AutoButtonColor = false,
+        Parent = KeybindHolder
+    })
+    Utility.AddCorner(KeybindButton, 4)
+    Utility.AddStroke(KeybindButton, CONFIG.BorderColor, 1)
+    
+    local function GetKeyName(key)
+        if key == Enum.KeyCode.Unknown then
+            return "Yok"
+        end
+        
+        local name = key.Name
+        -- Kısa isimler
+        local shortNames = {
+            ["LeftShift"] = "LShift",
+            ["RightShift"] = "RShift",
+            ["LeftControl"] = "LCtrl",
+            ["RightControl"] = "RCtrl",
+            ["LeftAlt"] = "LAlt",
+            ["RightAlt"] = "RAlt",
+            ["Backspace"] = "Back",
+            ["CapsLock"] = "Caps",
+        }
+        
+        return shortNames[name] or name
+    end
+    
+    KeybindButton.MouseButton1Click:Connect(function()
+        isListening = true
+        KeybindButton.Text = "..."
+        Utility.Tween(KeybindButton, {BackgroundColor3 = CONFIG.AccentColor}, 0.2)
+        Utility.Tween(KeybindButton, {TextColor3 = CONFIG.TextColor}, 0.2)
+    end)
+    
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if isListening then
+            if input.UserInputType == Enum.UserInputType.Keyboard then
+                local key = input.KeyCode
+                
+                -- Escape to clear
+                if key == Enum.KeyCode.Escape then
+                    currentKey = Enum.KeyCode.Unknown
+                else
+                    currentKey = key
+                end
+                
+                isListening = false
+                KeybindButton.Text = GetKeyName(currentKey)
+                Utility.Tween(KeybindButton, {BackgroundColor3 = CONFIG.MainColor}, 0.2)
+                Utility.Tween(KeybindButton, {TextColor3 = CONFIG.SubTextColor}, 0.2)
+                
+                keybindChangedCallback(currentKey)
+                
+                if keybindFlag then
+                    ShadowLib.Flags = ShadowLib.Flags or {}
+                    ShadowLib.Flags[keybindFlag] = currentKey
+                end
+            end
+        else
+            -- Trigger callback when key pressed
+            if input.KeyCode == currentKey and currentKey ~= Enum.KeyCode.Unknown and not gameProcessed then
+                keybindCallback(currentKey)
+            end
+        end
+    end)
+    
+    -- Hover effects
+    KeybindButton.MouseEnter:Connect(function()
+        if not isListening then
+            Utility.Tween(KeybindButton, {BackgroundColor3 = CONFIG.SecondaryColor}, 0.1)
+        end
+    end)
+    
+    KeybindButton.MouseLeave:Connect(function()
+        if not isListening then
+            Utility.Tween(KeybindButton, {BackgroundColor3 = CONFIG.MainColor}, 0.1)
+        end
+    end)
+    
+    local KeybindObject = {
+        Holder = KeybindHolder,
+        Button = KeybindButton,
+        Value = currentKey,
+        
+        Set = function(self, key)
+            currentKey = key
+            KeybindButton.Text = GetKeyName(currentKey)
+        end,
+        
+        Get = function(self)
+            return currentKey
+        end,
+        
+        SetCallback = function(self, callback)
+            keybindCallback = callback
+        end
+    }
+    
+    table.insert(Tab.Elements, KeybindObject)
+    return KeybindObject
+end
+
+print("[ShadowLib] Part 4 Loaded - Dropdown, Input, Keybind ✓")
+
+--[[
+    ShadowLib - Part 5
+    ColorPicker, Notification System
+]]
+
+-- ═══════════════════════════════════════════
+-- COLORPICKER COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddColorPickerToTab(Tab, options)
+    options = options or {}
+    local pickerName = options.Name or "Color"
+    local pickerIcon = options.Icon or "palette"
+    local pickerDefault = options.Default or Color3.fromRGB(88, 101, 242)
+    local pickerCallback = options.Callback or function() end
+    local pickerFlag = options.Flag or nil
+    
+    local currentColor = pickerDefault
+    local currentHue, currentSat, currentVal = Color3.toHSV(pickerDefault)
+    local isOpen = false
+    local pickerConnections = {}
+    
+    local PickerHolder = Utility.Create("Frame", {
+        Name = pickerName .. "_Holder",
+        BackgroundColor3 = CONFIG.SecondaryColor,
+        Size = UDim2.new(1, 0, 0, 42),
+        ClipsDescendants = true,
+        Parent = Tab.Page
+    })
+    Utility.AddCorner(PickerHolder, 8)
+    
+    local contentOffset = 0
+    
+    if pickerIcon then
+        local Icon = Utility.Create("ImageLabel", {
+            Name = "Icon",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 13),
+            Size = UDim2.new(0, 16, 0, 16),
+            Image = Utility.GetIcon(pickerIcon),
+            ImageColor3 = CONFIG.SubTextColor,
+            Parent = PickerHolder
+        })
+        contentOffset = 24
+    end
+    
+    local PickerLabel = Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12 + contentOffset, 0, 0),
+        Size = UDim2.new(1, -70 - contentOffset, 0, 42),
+        Font = CONFIG.Font,
+        Text = pickerName,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = PickerHolder
+    })
+    
+    -- Color Preview Button
+    local ColorPreview = Utility.Create("TextButton", {
+        Name = "Preview",
+        AnchorPoint = Vector2.new(1, 0.5),
+        BackgroundColor3 = currentColor,
+        Position = UDim2.new(1, -12, 0, 21),
+        Size = UDim2.new(0, 40, 0, 24),
+        Text = "",
+        AutoButtonColor = false,
+        Parent = PickerHolder
+    })
+    Utility.AddCorner(ColorPreview, 4)
+    Utility.AddStroke(ColorPreview, CONFIG.BorderColor, 1)
+    
+    -- Expanded Picker Container
+    local PickerContainer = Utility.Create("Frame", {
+        Name = "Container",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 10, 0, 48),
+        Size = UDim2.new(1, -20, 0, 130),
+        Visible = false,
+        Parent = PickerHolder
+    })
+    
+    -- Saturation/Value Box
+    local SatValBox = Utility.Create("ImageLabel", {
+        Name = "SatVal",
+        BackgroundColor3 = Color3.fromHSV(currentHue, 1, 1),
+        Position = UDim2.new(0, 0, 0, 0),
+        Size = UDim2.new(1, -35, 0, 100),
+        Image = "rbxassetid://4155801252",
+        Parent = PickerContainer
+    })
+    Utility.AddCorner(SatValBox, 6)
+    
+    -- Dark overlay for value
+    local ValueOverlay = Utility.Create("ImageLabel", {
+        Name = "ValueOverlay",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        Image = "rbxassetid://4155801252",
+        ImageColor3 = Color3.new(0, 0, 0),
+        ImageTransparency = 0,
+        Rotation = 180,
+        Parent = SatValBox
+    })
+    Utility.AddCorner(ValueOverlay, 6)
+    
+    -- SatVal Cursor
+    local SatValCursor = Utility.Create("Frame", {
+        Name = "Cursor",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        Position = UDim2.new(currentSat, 0, 1 - currentVal, 0),
+        Size = UDim2.new(0, 14, 0, 14),
+        Parent = SatValBox
+    })
+    Utility.AddCorner(SatValCursor, 7)
+    Utility.AddStroke(SatValCursor, Color3.new(0, 0, 0), 2)
+    
+    -- Hue Slider
+    local HueSlider = Utility.Create("Frame", {
+        Name = "Hue",
+        AnchorPoint = Vector2.new(1, 0),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        Position = UDim2.new(1, 0, 0, 0),
+        Size = UDim2.new(0, 20, 0, 100),
+        Parent = PickerContainer
+    })
+    Utility.AddCorner(HueSlider, 4)
+    
+    -- Hue Gradient
+    local HueGradient = Utility.Create("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+            ColorSequenceKeypoint.new(0.17, Color3.fromRGB(255, 255, 0)),
+            ColorSequenceKeypoint.new(0.33, Color3.fromRGB(0, 255, 0)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 255, 255)),
+            ColorSequenceKeypoint.new(0.67, Color3.fromRGB(0, 0, 255)),
+            ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 0, 255)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0))
+        }),
+        Rotation = 90,
+        Parent = HueSlider
+    })
+    
+    -- Hue Cursor
+    local HueCursor = Utility.Create("Frame", {
+        Name = "Cursor",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        Position = UDim2.new(0.5, 0, currentHue, 0),
+        Size = UDim2.new(1, 6, 0, 6),
+        Parent = HueSlider
+    })
+    Utility.AddCorner(HueCursor, 3)
+    Utility.AddStroke(HueCursor, Color3.new(0, 0, 0), 1)
+    
+    -- RGB Input Fields
+    local RGBContainer = Utility.Create("Frame", {
+        Name = "RGB",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 0, 0, 106),
+        Size = UDim2.new(1, 0, 0, 24),
+        Parent = PickerContainer
+    })
+    
+    local RGBLayout = Utility.Create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6),
+        Parent = RGBContainer
+    })
+    
+    local function CreateRGBInput(name, defaultVal)
+        local Box = Utility.Create("Frame", {
+            Name = name,
+            BackgroundColor3 = CONFIG.MainColor,
+            Size = UDim2.new(0, 55, 1, 0),
+            Parent = RGBContainer
+        })
+        Utility.AddCorner(Box, 4)
+        
+        local Label = Utility.Create("TextLabel", {
+            Name = "Label",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 6, 0, 0),
+            Size = UDim2.new(0, 14, 1, 0),
+            Font = CONFIG.TitleFont,
+            Text = name,
+            TextColor3 = CONFIG.SubTextColor,
+            TextSize = 10,
+            Parent = Box
+        })
+        
+        local Input = Utility.Create("TextBox", {
+            Name = "Input",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 22, 0, 0),
+            Size = UDim2.new(1, -28, 1, 0),
+            Font = CONFIG.Font,
+            Text = tostring(defaultVal),
+            TextColor3 = CONFIG.TextColor,
+            TextSize = 11,
+            Parent = Box
+        })
+        
+        return Input
+    end
+    
+    local RInput = CreateRGBInput("R", math.floor(currentColor.R * 255))
+    local GInput = CreateRGBInput("G", math.floor(currentColor.G * 255))
+    local BInput = CreateRGBInput("B", math.floor(currentColor.B * 255))
+    
+    -- Hex Input
+    local HexBox = Utility.Create("Frame", {
+        Name = "Hex",
+        BackgroundColor3 = CONFIG.MainColor,
+        Size = UDim2.new(0, 70, 1, 0),
+        Parent = RGBContainer
+    })
+    Utility.AddCorner(HexBox, 4)
+    
+    local HexLabel = Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 6, 0, 0),
+        Size = UDim2.new(0, 12, 1, 0),
+        Font = CONFIG.TitleFont,
+        Text = "#",
+        TextColor3 = CONFIG.SubTextColor,
+        TextSize = 11,
+        Parent = HexBox
+    })
+    
+    local HexInput = Utility.Create("TextBox", {
+        Name = "Input",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 18, 0, 0),
+        Size = UDim2.new(1, -24, 1, 0),
+        Font = CONFIG.Font,
+        Text = string.format("%02X%02X%02X", currentColor.R * 255, currentColor.G * 255, currentColor.B * 255),
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 11,
+        Parent = HexBox
+    })
+    
+    local function UpdateColor(h, s, v, skipInputUpdate)
+        currentHue = h
+        currentSat = s
+        currentVal = v
+        currentColor = Color3.fromHSV(h, s, v)
+        
+        -- Update visuals
+        ColorPreview.BackgroundColor3 = currentColor
+        SatValBox.BackgroundColor3 = Color3.fromHSV(h, 1, 1)
+        SatValCursor.Position = UDim2.new(s, 0, 1 - v, 0)
+        HueCursor.Position = UDim2.new(0.5, 0, h, 0)
+        
+        if not skipInputUpdate then
+            RInput.Text = tostring(math.floor(currentColor.R * 255))
+            GInput.Text = tostring(math.floor(currentColor.G * 255))
+            BInput.Text = tostring(math.floor(currentColor.B * 255))
+            HexInput.Text = string.format("%02X%02X%02X", currentColor.R * 255, currentColor.G * 255, currentColor.B * 255)
+        end
+        
+        pickerCallback(currentColor)
+        
+        if pickerFlag then
+            ShadowLib.Flags = ShadowLib.Flags or {}
+            ShadowLib.Flags[pickerFlag] = currentColor
+        end
+    end
+    
+    -- SatVal Dragging
+    local satValDragging = false
+    
+    SatValBox.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            satValDragging = true
+        end
+    end)
+    
+    SatValBox.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            satValDragging = false
+        end
+    end)
+    
+    table.insert(pickerConnections, UserInputService.InputChanged:Connect(function(input)
+        if satValDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local mouseX = input.Position.X
+            local mouseY = input.Position.Y
+            
+            local relX = math.clamp((mouseX - SatValBox.AbsolutePosition.X) / SatValBox.AbsoluteSize.X, 0, 1)
+            local relY = math.clamp((mouseY - SatValBox.AbsolutePosition.Y) / SatValBox.AbsoluteSize.Y, 0, 1)
+            
+            UpdateColor(currentHue, relX, 1 - relY)
+        end
+    end))
+    
+    -- Hue Dragging
+    local hueDragging = false
+    
+    HueSlider.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            hueDragging = true
+        end
+    end)
+    
+    HueSlider.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            hueDragging = false
+        end
+    end)
+    
+    table.insert(pickerConnections, UserInputService.InputChanged:Connect(function(input)
+        if hueDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local mouseY = input.Position.Y
+            local relY = math.clamp((mouseY - HueSlider.AbsolutePosition.Y) / HueSlider.AbsoluteSize.Y, 0, 1)
+            
+            UpdateColor(relY, currentSat, currentVal)
+        end
+    end))
+    
+    table.insert(pickerConnections, UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            satValDragging = false
+            hueDragging = false
+        end
+    end))
+    
+    -- RGB Input Handling
+    local function OnRGBChanged()
+        local r = tonumber(RInput.Text) or 0
+        local g = tonumber(GInput.Text) or 0
+        local b = tonumber(BInput.Text) or 0
+        
+        r = math.clamp(r, 0, 255)
+        g = math.clamp(g, 0, 255)
+        b = math.clamp(b, 0, 255)
+        
+        local color = Color3.fromRGB(r, g, b)
+        local h, s, v = Color3.toHSV(color)
+        
+        UpdateColor(h, s, v, true)
+        HexInput.Text = string.format("%02X%02X%02X", r, g, b)
+    end
+    
+    RInput.FocusLost:Connect(OnRGBChanged)
+    GInput.FocusLost:Connect(OnRGBChanged)
+    BInput.FocusLost:Connect(OnRGBChanged)
+    
+    -- Hex Input Handling
+    HexInput.FocusLost:Connect(function()
+        local hex = HexInput.Text:gsub("#", "")
+        if #hex == 6 then
+            local r = tonumber(hex:sub(1, 2), 16) or 0
+            local g = tonumber(hex:sub(3, 4), 16) or 0
+            local b = tonumber(hex:sub(5, 6), 16) or 0
+            
+            local color = Color3.fromRGB(r, g, b)
+            local h, s, v = Color3.toHSV(color)
+            
+            UpdateColor(h, s, v, true)
+            RInput.Text = tostring(r)
+            GInput.Text = tostring(g)
+            BInput.Text = tostring(b)
+        end
+    end)
+    
+    -- Toggle Picker
+    ColorPreview.MouseButton1Click:Connect(function()
+        isOpen = not isOpen
+        
+        if isOpen then
+            PickerContainer.Visible = true
+            Utility.Tween(PickerHolder, {Size = UDim2.new(1, 0, 0, 188)}, 0.25)
+        else
+            Utility.Tween(PickerHolder, {Size = UDim2.new(1, 0, 0, 42)}, 0.25)
+            task.delay(0.25, function()
+                PickerContainer.Visible = false
+            end)
+        end
+    end)
+    
+    local ColorPickerObject = {
+        Holder = PickerHolder,
+        Value = currentColor,
+        
+        Set = function(self, color)
+            local h, s, v = Color3.toHSV(color)
+            UpdateColor(h, s, v)
+        end,
+        
+        Get = function(self)
+            return currentColor
+        end,
+        
+        SetCallback = function(self, callback)
+            pickerCallback = callback
+        end
+    }
+    
+    table.insert(Tab.Elements, ColorPickerObject)
+    return ColorPickerObject
+end
+
+-- ═══════════════════════════════════════════
+-- NOTIFICATION SYSTEM
+-- ═══════════════════════════════════════════
+function ShadowLib:CreateNotificationHolder()
+    if self.NotificationHolder then return self.NotificationHolder end
+    
+    local NotifGui = Utility.Create("ScreenGui", {
+        Name = "ShadowLib_Notifications",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    })
+    
+    local success = pcall(function()
+        NotifGui.Parent = CoreGui
+    end)
+    if not success then
+        NotifGui.Parent = Player:WaitForChild("PlayerGui")
+    end
+    
+    local NotifHolder = Utility.Create("Frame", {
+        Name = "Holder",
+        AnchorPoint = Vector2.new(1, 1),
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, -20, 1, -20),
+        Size = UDim2.new(0, 300, 1, -40),
+        Parent = NotifGui
+    })
+    
+    local NotifLayout = Utility.Create("UIListLayout", {
+        HorizontalAlignment = Enum.HorizontalAlignment.Right,
+        VerticalAlignment = Enum.VerticalAlignment.Bottom,
+        Padding = UDim.new(0, 8),
+        Parent = NotifHolder
+    })
+    
+    self.NotificationHolder = NotifHolder
+    return NotifHolder
+end
+
+function ShadowLib:Notify(options)
+    options = options or {}
+    local title = options.Title or "Bildirim"
+    local message = options.Message or ""
+    local icon = options.Icon or "bell"
+    local duration = options.Duration or 4
+    local notifType = options.Type or "info" -- info, success, warning, error
+    
+    local holder = self:CreateNotificationHolder()
+    
+    local typeColors = {
+        info = CONFIG.AccentColor,
+        success = CONFIG.SuccessColor,
+        warning = CONFIG.WarningColor,
+        error = CONFIG.ErrorColor
+    }
+    
+    local typeIcons = {
+        info = "bell",
+        success = "check",
+        warning = "alert-triangle",
+        error = "x"
+    }
+    
+    local accentColor = typeColors[notifType] or CONFIG.AccentColor
+    icon = icon or typeIcons[notifType]
+    
+    local Notification = Utility.Create("Frame", {
+        Name = "Notification",
+        BackgroundColor3 = CONFIG.MainColor,
+        Size = UDim2.new(1, 0, 0, 0),
+        ClipsDescendants = true,
+        Parent = holder
+    })
+    Utility.AddCorner(Notification, 8)
+    Utility.AddStroke(Notification, CONFIG.BorderColor, 1)
+    
+    -- Accent Line
+    local AccentLine = Utility.Create("Frame", {
+        Name = "Accent",
+        BackgroundColor3 = accentColor,
+        Size = UDim2.new(0, 4, 1, 0),
+        Parent = Notification
+    })
+    
+    local AccentCorner = Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = AccentLine
+    })
+    
+    -- Icon
+    local NotifIcon = Utility.Create("ImageLabel", {
+        Name = "Icon",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 16, 0, 14),
+        Size = UDim2.new(0, 20, 0, 20),
+        Image = Utility.GetIcon(icon),
+        ImageColor3 = accentColor,
+        Parent = Notification
+    })
+    
+    -- Title
+    local NotifTitle = Utility.Create("TextLabel", {
+        Name = "Title",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 46, 0, 10),
+        Size = UDim2.new(1, -56, 0, 18),
+        Font = CONFIG.TitleFont,
+        Text = title,
+        TextColor3 = CONFIG.TextColor,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Parent = Notification
+    })
+    
+    -- Message
+    local NotifMessage = Utility.Create("TextLabel", {
+        Name = "Message",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 46, 0, 30),
+        Size = UDim2.new(1, -56, 0, 30),
+        Font = CONFIG.Font,
+        Text = message,
+        TextColor3 = CONFIG.SubTextColor,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        TextWrapped = true,
+        Parent = Notification
+    })
+    
+    -- Progress Bar
+    local ProgressBar = Utility.Create("Frame", {
+        Name = "Progress",
+        BackgroundColor3 = accentColor,
+        Position = UDim2.new(0, 0, 1, -3),
+        Size = UDim2.new(1, 0, 0, 3),
+        Parent = Notification
+    })
+    
+    -- Calculate height based on message
+    local textHeight = message ~= "" and 32 or 0
+    local totalHeight = 48 + (message ~= "" and 20 or 0)
+    
+    -- Animate in
+    Utility.Tween(Notification, {Size = UDim2.new(1, 0, 0, totalHeight)}, 0.3, Enum.EasingStyle.Back)
+    
+    -- Progress animation
+    task.delay(0.3, function()
+        Utility.Tween(ProgressBar, {Size = UDim2.new(0, 0, 0, 3)}, duration)
+    end)
+    
+    -- Auto dismiss
+    task.delay(duration + 0.3, function()
+        Utility.Tween(Notification, {
+            Size = UDim2.new(1, 0, 0, 0),
+            BackgroundTransparency = 1
+        }, 0.3)
+        
+        task.delay(0.3, function()
+            Notification:Destroy()
+        end)
+    end)
+    
+    return Notification
+end
+
+-- ═══════════════════════════════════════════
+-- SEPARATOR COMPONENT
+-- ═══════════════════════════════════════════
+function ShadowLib:AddSeparatorToTab(Tab, options)
+    options = options or {}
+    local text = options.Text or nil
+    
+    local SepHolder = Utility.Create("Frame", {
+        Name = "Separator",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, text and 24 or 12),
+        Parent = Tab.Page
+    })
+    
+    if text then
+        local SepText = Utility.Create("TextLabel", {
+            Name = "Text",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.new(0, 0, 0, 16),
+            AutomaticSize = Enum.AutomaticSize.X,
+            Font = CONFIG.Font,
+            Text = "  " .. text .. "  ",
+            TextColor3 = CONFIG.SubTextColor,
+            TextSize = 11,
+            Parent = SepHolder
+        })
+        
+        local LeftLine = Utility.Create("Frame", {
+            Name = "Left",
+            AnchorPoint = Vector2.new(1, 0.5),
+            BackgroundColor3 = CONFIG.BorderColor,
+            Position = UDim2.new(0.5, -SepText.AbsoluteSize.X/2 - 10, 0.5, 0),
+            Size = UDim2.new(0.3, 0, 0, 1),
+            Parent = SepHolder
+        })
+        
+        local RightLine = Utility.Create("Frame", {
+            Name = "Right",
+            AnchorPoint = Vector2.new(0, 0.5),
+            BackgroundColor3 = CONFIG.BorderColor,
+            Position = UDim2.new(0.5, SepText.AbsoluteSize.X/2 + 10, 0.5, 0),
+            Size = UDim2.new(0.3, 0, 0, 1),
+            Parent = SepHolder
+        })
+    else
+        local Line = Utility.Create("Frame", {
+            Name = "Line",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundColor3 = CONFIG.BorderColor,
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0.9, 0, 0, 1),
+            Parent = SepHolder
+        })
+    end
+    
+    return SepHolder
+end
+
+print("[ShadowLib] Part 5 Loaded - ColorPicker, Notification ✓")
+
+--[[
+    ShadowLib - Part 6
+    Final Export, Theme System, Örnek Kullanım
+]]
+
+-- ═══════════════════════════════════════════
+-- THEME SYSTEM
+-- ═══════════════════════════════════════════
+ShadowLib.Themes = {
+    Dark = {
+        MainColor = Color3.fromRGB(15, 15, 20),
+        SecondaryColor = Color3.fromRGB(22, 22, 30),
+        AccentColor = Color3.fromRGB(88, 101, 242),
+        TextColor = Color3.fromRGB(255, 255, 255),
+        SubTextColor = Color3.fromRGB(150, 150, 160),
+        BorderColor = Color3.fromRGB(40, 40, 50),
+    },
+    Midnight = {
+        MainColor = Color3.fromRGB(10, 10, 18),
+        SecondaryColor = Color3.fromRGB(18, 18, 28),
+        AccentColor = Color3.fromRGB(138, 43, 226),
+        TextColor = Color3.fromRGB(255, 255, 255),
+        SubTextColor = Color3.fromRGB(140, 140, 160),
+        BorderColor = Color3.fromRGB(35, 35, 50),
+    },
+    Ocean = {
+        MainColor = Color3.fromRGB(12, 20, 28),
+        SecondaryColor = Color3.fromRGB(18, 30, 42),
+        AccentColor = Color3.fromRGB(0, 150, 200),
+        TextColor = Color3.fromRGB(255, 255, 255),
+        SubTextColor = Color3.fromRGB(130, 160, 180),
+        BorderColor = Color3.fromRGB(30, 50, 65),
+    },
+    Blood = {
+        MainColor = Color3.fromRGB(18, 12, 12),
+        SecondaryColor = Color3.fromRGB(28, 18, 18),
+        AccentColor = Color3.fromRGB(200, 50, 50),
+        TextColor = Color3.fromRGB(255, 255, 255),
+        SubTextColor = Color3.fromRGB(180, 140, 140),
+        BorderColor = Color3.fromRGB(60, 35, 35),
+    },
+    Emerald = {
+        MainColor = Color3.fromRGB(12, 18, 14),
+        SecondaryColor = Color3.fromRGB(18, 28, 22),
+        AccentColor = Color3.fromRGB(46, 204, 113),
+        TextColor = Color3.fromRGB(255, 255, 255),
+        SubTextColor = Color3.fromRGB(140, 170, 150),
+        BorderColor = Color3.fromRGB(35, 55, 42),
+    },
+    Rose = {
+        MainColor = Color3.fromRGB(20, 12, 18),
+        SecondaryColor = Color3.fromRGB(32, 20, 28),
+        AccentColor = Color3.fromRGB(255, 100, 150),
+        TextColor = Color3.fromRGB(255, 255, 255),
+        SubTextColor = Color3.fromRGB(180, 150, 165),
+        BorderColor = Color3.fromRGB(60, 40, 52),
+    },
+    Sunset = {
+        MainColor = Color3.fromRGB(22, 14, 12),
+        SecondaryColor = Color3.fromRGB(35, 22, 18),
+        AccentColor = Color3.fromRGB(255, 120, 50),
+        TextColor = Color3.fromRGB(255, 255, 255),
+        SubTextColor = Color3.fromRGB(190, 160, 145),
+        BorderColor = Color3.fromRGB(65, 45, 38),
+    },
+    Abyss = {
+        MainColor = Color3.fromRGB(5, 5, 8),
+        SecondaryColor = Color3.fromRGB(12, 12, 18),
+        AccentColor = Color3.fromRGB(100, 100, 255),
+        TextColor = Color3.fromRGB(220, 220, 240),
+        SubTextColor = Color3.fromRGB(100, 100, 130),
+        BorderColor = Color3.fromRGB(25, 25, 40),
+    }
+}
+
+function ShadowLib:SetTheme(themeName)
+    local theme = self.Themes[themeName]
+    if not theme then
+        warn("[ShadowLib] Theme not found: " .. themeName)
+        return
+    end
+    
+    for key, value in pairs(theme) do
+        CONFIG[key] = value
+    end
+    
+    print("[ShadowLib] Theme set to: " .. themeName)
+end
+
+function ShadowLib:CreateCustomTheme(name, colors)
+    self.Themes[name] = colors
+end
+
+-- ═══════════════════════════════════════════
+-- FLAG SYSTEM
+-- ═══════════════════════════════════════════
+ShadowLib.Flags = {}
+
+function ShadowLib:GetFlag(flagName)
+    return self.Flags[flagName]
+end
+
+function ShadowLib:SetFlag(flagName, value)
+    self.Flags[flagName] = value
+end
+
+-- ═══════════════════════════════════════════
+-- SAVE / LOAD CONFIG
+-- ═══════════════════════════════════════════
+function ShadowLib:SaveConfig(fileName)
+    if not writefile then
+        warn("[ShadowLib] Executor doesn't support file saving!")
+        return false
+    end
+    
+    local configData = {}
+    for flag, value in pairs(self.Flags) do
+        if typeof(value) == "Color3" then
+            configData[flag] = {Type = "Color3", R = value.R, G = value.G, B = value.B}
+        elseif typeof(value) == "EnumItem" then
+            configData[flag] = {Type = "Enum", Value = tostring(value)}
+        else
+            configData[flag] = value
+        end
+    end
+    
+    local success, err = pcall(function()
+        writefile(fileName .. ".json", HttpService:JSONEncode(configData))
+    end)
+    
+    if success then
+        self:Notify({
+            Title = "Config Saved",
+            Message = fileName .. " kaydedildi!",
+            Type = "success",
+            Duration = 3
+        })
+        return true
+    else
+        warn("[ShadowLib] Failed to save: " .. tostring(err))
+        return false
+    end
+end
+
+function ShadowLib:LoadConfig(fileName)
+    if not readfile or not isfile then
+        warn("[ShadowLib] Executor doesn't support file reading!")
+        return false
+    end
+    
+    if not isfile(fileName .. ".json") then
+        warn("[ShadowLib] Config file not found: " .. fileName)
+        return false
+    end
+    
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(readfile(fileName .. ".json"))
+    end)
+    
+    if success and data then
+        for flag, value in pairs(data) do
+            if type(value) == "table" then
+                if value.Type == "Color3" then
+                    self.Flags[flag] = Color3.new(value.R, value.G, value.B)
+                elseif value.Type == "Enum" then
+                    -- Parse enum string like "Enum.KeyCode.E"
+                    local enumPath = value.Value:split(".")
+                    if #enumPath == 3 then
+                        self.Flags[flag] = Enum[enumPath[2]][enumPath[3]]
+                    end
+                end
+            else
+                self.Flags[flag] = value
+            end
+        end
+        
+        self:Notify({
+            Title = "Config Loaded",
+            Message = fileName .. " yüklendi!",
+            Type = "success",
+            Duration = 3
+        })
+        return true
+    end
+    
+    return false
+end
+
+-- ═══════════════════════════════════════════
+-- DESTROY LIBRARY
+-- ═══════════════════════════════════════════
+function ShadowLib:Destroy()
+    for _, window in pairs(self.Windows) do
+        if window.Gui then
+            window.Gui:Destroy()
+        end
+    end
+    
+    if self.NotificationHolder and self.NotificationHolder.Parent then
+        self.NotificationHolder.Parent:Destroy()
+    end
+    
+    self.Windows = {}
+    self.Flags = {}
+    
+    print("[ShadowLib] Library destroyed")
+end
+
+-- ═══════════════════════════════════════════
+-- FINAL EXPORT
+-- ═══════════════════════════════════════════
+print("[ShadowLib] Part 6 Loaded - Final Export ✓")
+print("═══════════════════════════════════════════")
+print("   ShadowLib v1.0 - Loaded Successfully!")
+print("   Dark Theme UI Library for Roblox")
+print("   Lucide Icons Supported")
+print("═══════════════════════════════════════════")
+
+return ShadowLib
