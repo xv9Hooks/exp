@@ -1767,6 +1767,7 @@ local function main()
 		if env.setclipboard then context:AddRegistered("COPY_PATH") end
 		context:AddRegistered("INSERT_OBJECT")
 		context:AddRegistered("SAVE_INST")
+		context:AddRegistered("EXPORT_DECOMPILED_FOLDER", env.decompile == nil or env.writefile == nil or env.makefolder == nil or #sList == 0)
 		-- context:AddRegistered("CALL_FUNCTION")
 		-- context:AddRegistered("VIEW_CONNECTIONS")
 		-- context:AddRegistered("GET_REFERENCES")
@@ -1833,6 +1834,96 @@ local function main()
 
 	Explorer.InitRightClick = function()
 		local context = Lib.ContextMenu.new()
+		local split,insert,concat = string.split,table.insert,table.concat
+
+		local function sanitizeFileName(name)
+			name = tostring(name or "")
+			name = name:gsub("[%c]", "_")
+			name = name:gsub("[<>:\"/\\|%?%*]", "_")
+			name = name:gsub("^%s+", ""):gsub("%s+$", "")
+			if #name == 0 then
+				name = "Unnamed"
+			end
+			if #name > 120 then
+				name = name:sub(1,120)
+			end
+			return name
+		end
+
+		local function ensureFolder(folderPath)
+			local currentPath = ""
+			for _, segment in ipairs(split(folderPath, "/")) do
+				if #segment > 0 then
+					currentPath = (#currentPath == 0 and segment) or (currentPath.."/"..segment)
+					pcall(env.makefolder, currentPath)
+				end
+			end
+		end
+
+		local function getRelativeFolderSegments(rootObj, scriptObj)
+			if scriptObj == rootObj then
+				return {}
+			end
+
+			local segments = {}
+			local current = scriptObj.Parent
+			while current and current ~= rootObj do
+				insert(segments, 1, sanitizeFileName(current.Name))
+				current = current.Parent
+			end
+
+			if current ~= rootObj then
+				return nil
+			end
+
+			return segments
+		end
+
+		local function collectDecompilableScripts(rootObj)
+			local out = {}
+			if rootObj:IsA("LuaSourceContainer") and env.isViableDecompileScript(rootObj) then
+				out[#out+1] = rootObj
+			end
+
+			local success, descs = pcall(getDescendants, rootObj)
+			if success and descs then
+				for i = 1,#descs do
+					local obj = descs[i]
+					if obj:IsA("LuaSourceContainer") and env.isViableDecompileScript(obj) then
+						out[#out+1] = obj
+					end
+				end
+			end
+
+			return out
+		end
+
+		local function getUniqueFileName(folderNameMap, folderPath, baseStem)
+			local usedNames = folderNameMap[folderPath]
+			if not usedNames then
+				usedNames = {}
+				folderNameMap[folderPath] = usedNames
+			end
+
+			local candidate = baseStem..".lua"
+			local index = 2
+			while usedNames[candidate] do
+				candidate = ("%s_%i.lua"):format(baseStem, index)
+				index = index + 1
+			end
+			usedNames[candidate] = true
+			return candidate
+		end
+
+		local function buildScriptHeader(scriptObj, exportedAt)
+			local success, fullName = pcall(scriptObj.GetFullName, scriptObj)
+			if not success or type(fullName) ~= "string" or #fullName == 0 then
+				fullName = tostring(scriptObj)
+			end
+
+			return ("-- DEX Folder Export\n-- Path: %s\n-- Class: %s\n-- ExportedAt: %s\n\n")
+				:format(fullName, scriptObj.ClassName, exportedAt)
+		end
 
 		context:Register("CUT",{Name = "Cut", IconMap = Explorer.MiscIcons, Icon = "Cut", DisabledIcon = "Cut_Disabled", Shortcut = "Ctrl+Z", OnClick = function()
 			local destroy,clone = game.Destroy,game.Clone
@@ -2237,6 +2328,76 @@ local function main()
 					task.wait(0.1)
 				end
 			end
+		end})
+		context:Register("EXPORT_DECOMPILED_FOLDER",{Name = "Export Decompiled Folder", IconMap = Explorer.MiscIcons, Icon = "Save", OnClick = function()
+			if env.decompile == nil or env.writefile == nil or env.makefolder == nil then
+				return
+			end
+
+			local sList = selection.List
+			if #sList == 0 then
+				return
+			end
+
+			local batchStamp = os.date("%Y%m%d_%H%M%S")
+			local exportedAt = os.date("%Y-%m-%d %H:%M:%S")
+			local totalScripts,totalSuccess,totalFailed = 0,0,0
+			local rootFolderName = "dex/saved"
+			ensureFolder(rootFolderName)
+
+			for i = 1,#sList do
+				local rootObj = sList[i].Obj
+				local exportFolder = ("%s/%s_%s_%s_%s_%i"):format(
+					rootFolderName,
+					tostring(game.PlaceId),
+					sanitizeFileName(rootObj.ClassName),
+					sanitizeFileName(rootObj.Name),
+					batchStamp,
+					i
+				)
+				ensureFolder(exportFolder)
+
+				local scripts = collectDecompilableScripts(rootObj)
+				local folderNameMap = {}
+				for ind = 1,#scripts do
+					local scriptObj = scripts[ind]
+					totalScripts = totalScripts + 1
+
+					local relativeSegments = getRelativeFolderSegments(rootObj, scriptObj)
+					local scriptFolder = exportFolder
+					if relativeSegments and #relativeSegments > 0 then
+						scriptFolder = scriptFolder.."/"..concat(relativeSegments, "/")
+						ensureFolder(scriptFolder)
+					end
+
+					local stem = ("%s.%s"):format(sanitizeFileName(scriptObj.Name), sanitizeFileName(scriptObj.ClassName))
+					local scriptFile = scriptFolder.."/"..getUniqueFileName(folderNameMap, scriptFolder, stem)
+					local success, source = pcall(env.decompile, scriptObj)
+					local writeStateOk = success and type(source) == "string"
+					local output
+
+					if writeStateOk then
+						output = buildScriptHeader(scriptObj, exportedAt)..source
+					else
+						output = buildScriptHeader(scriptObj, exportedAt)
+							..("-- Failed to decompile script.\n-- Error: %s\n"):format(tostring(source))
+					end
+
+					local writeSuccess, writeErr = pcall(env.writefile, scriptFile, output)
+					if not writeSuccess then
+						writeStateOk = false
+						warn("DEX folder export write failed: "..tostring(writeErr))
+					end
+
+					if writeStateOk then
+						totalSuccess = totalSuccess + 1
+					else
+						totalFailed = totalFailed + 1
+					end
+				end
+			end
+
+			warn(("DEX folder export completed | scripts=%i success=%i failed=%i"):format(totalScripts, totalSuccess, totalFailed))
 		end})
 
         --[[context:Register("VIEW_CONNECTIONS",{Name = "View Connections", OnClick = function()
