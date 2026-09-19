@@ -1,0 +1,2 @@
+loadstring(game:HttpGet("https://raw.githubusercontent.com/smurfymain/random-ro-soccer/refs/heads/main/trs-numb"))()
+ 
